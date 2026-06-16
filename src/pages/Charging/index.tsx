@@ -33,7 +33,7 @@ const { confirm } = Modal;
 
 const Charging: React.FC = () => {
   const { stations, records, startCharging, stopCharging, getChargingStats } = useChargingStore();
-  const { agvList, getAgvById, updateAgvStatus } = useAgvStore();
+  const { agvList, getAgvById, updateAgvStatus, updateAgv } = useAgvStore();
   const [dispatchModalVisible, setDispatchModalVisible] = useState(false);
   const [selectedStation, setSelectedStation] = useState<ChargingStation | null>(null);
 
@@ -72,13 +72,14 @@ const Charging: React.FC = () => {
     confirm({
       title: '结束充电',
       icon: <ThunderboltOutlined />,
-      content: '确定要结束充电吗？',
+      content: '确定要结束充电吗？电量将自动充满。',
       okText: '确认结束',
       cancelText: '取消',
       onOk: () => {
         stopCharging(recordId, 100);
         updateAgvStatus(agvId, 'idle');
-        message.success('充电已结束');
+        updateAgv(agvId, { battery: 100 });
+        message.success('充电已结束，电量已充满');
       },
     });
   };

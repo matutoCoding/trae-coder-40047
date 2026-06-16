@@ -41,7 +41,7 @@ const { TabPane } = Tabs;
 
 const TaskDispatch: React.FC = () => {
   const { taskList, addTask, updateTaskStatus, assignTask, completeTask, getTaskStats, getTaskById } = useTaskStore();
-  const { agvList, getAgvById } = useAgvStore();
+  const { agvList, getAgvById, updateAgvStatus, updateAgv } = useAgvStore();
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [priorityFilter, setPriorityFilter] = useState<string>('all');
@@ -74,15 +74,21 @@ const TaskDispatch: React.FC = () => {
     inventory: '盘点任务',
   };
 
-  const filteredTaskList = taskList.filter((task) => {
-    const matchesSearch =
-      task.id.toLowerCase().includes(searchText.toLowerCase()) ||
-      task.name.toLowerCase().includes(searchText.toLowerCase()) ||
-      task.cargo.toLowerCase().includes(searchText.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
-    const matchesPriority = priorityFilter === 'all' || task.priority === priorityFilter;
-    return matchesSearch && matchesStatus && matchesPriority;
-  });
+  const filteredTaskList = [...taskList]
+    .sort((a, b) => {
+      const timeA = new Date(a.endTime || a.startTime || a.createTime).getTime();
+      const timeB = new Date(b.endTime || b.startTime || b.createTime).getTime();
+      return timeB - timeA;
+    })
+    .filter((task) => {
+      const matchesSearch =
+        task.id.toLowerCase().includes(searchText.toLowerCase()) ||
+        task.name.toLowerCase().includes(searchText.toLowerCase()) ||
+        task.cargo.toLowerCase().includes(searchText.toLowerCase());
+      const matchesStatus = statusFilter === 'all' || task.status === statusFilter;
+      const matchesPriority = priorityFilter === 'all' || task.priority === priorityFilter;
+      return matchesSearch && matchesStatus && matchesPriority;
+    });
 
   const availableAgvs = agvList.filter(
     (agv) => agv.status === 'idle' && agv.battery > 30
@@ -106,6 +112,8 @@ const TaskDispatch: React.FC = () => {
   const handleConfirmAssign = (agvId: string) => {
     if (selectedTask) {
       assignTask(selectedTask.id, agvId);
+      updateAgvStatus(agvId, 'running');
+      updateAgv(agvId, { currentTaskId: selectedTask.id });
       message.success(`任务已派发给 ${agvId}`);
       setAssignModalVisible(false);
     }
@@ -120,6 +128,10 @@ const TaskDispatch: React.FC = () => {
       cancelText: '取消',
       onOk: () => {
         completeTask(task.id);
+        if (task.agvId) {
+          updateAgvStatus(task.agvId, 'idle');
+          updateAgv(task.agvId, { currentTaskId: undefined });
+        }
         message.success('任务已完成，货物到位确认成功');
       },
     });

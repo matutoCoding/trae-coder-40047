@@ -61,7 +61,13 @@ const Dashboard: React.FC = () => {
 
   const runningAgvs = agvList.filter((a) => a.status === 'running');
   const pendingExceptions = exceptionList.filter((e) => e.status !== 'resolved');
-  const recentTasks = taskList.slice(0, 5);
+  const recentTasks = [...taskList]
+    .sort((a, b) => {
+      const timeA = new Date(a.endTime || a.startTime || a.createTime).getTime();
+      const timeB = new Date(b.endTime || b.startTime || b.createTime).getTime();
+      return timeB - timeA;
+    })
+    .slice(0, 5);
 
   const levelMap: Record<ExceptionLevel, { text: string; color: string }> = {
     critical: { text: '严重', color: 'red' },

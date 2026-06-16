@@ -42,13 +42,13 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       }, 0);
       return {
         taskList: [
-          ...state.taskList,
           {
             ...task,
             id: `TASK-${String(maxId + 1).padStart(3, '0')}`,
             createTime: new Date().toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-'),
             status: task.status || 'pending',
           },
+          ...state.taskList,
         ],
       };
     }),
