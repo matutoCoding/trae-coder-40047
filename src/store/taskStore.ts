@@ -27,12 +27,19 @@ interface TaskState {
     timeLabels: string[];
     completedCounts: number[];
     weightTotals: number[];
+    slotTasks: string[][];
   };
   getTaskTypeStats: () => {
     typeLabels: string[];
     typeCounts: number[];
   };
   getTodayTotalWeight: () => number;
+  getAgvWorkRanking: () => {
+    agvId: string;
+    agvName: string;
+    completedCount: number;
+    totalWeight: number;
+  }[];
 }
 
 export const useTaskStore = create<TaskState>((set, get) => ({
@@ -118,7 +125,7 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     const today = new Date().toLocaleDateString('zh-CN', { hour12: false }).replace(/\//g, '-');
     return {
       total: taskList.length,
-      pending: taskList.filter((t) => t.status === 'pending').length,
+      pending: taskList.filter((t) => t.status === 'pending' || t.status === 'scheduled').length,
       executing: taskList.filter((t) => t.status === 'executing' || t.status === 'assigned').length,
       completed: taskList.filter((t) => t.status === 'completed').length,
       exception: taskList.filter((t) => t.status === 'exception').length,
@@ -131,9 +138,10 @@ export const useTaskStore = create<TaskState>((set, get) => ({
   getTodayTrendStats: () => {
     const { taskList } = get();
     const today = new Date().toLocaleDateString('zh-CN', { hour12: false }).replace(/\//g, '-');
-    const timeLabels = ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '24:00'];
-    const completedCounts = [0, 0, 0, 0, 0, 0, 0];
-    const weightTotals = [0, 0, 0, 0, 0, 0, 0];
+    const timeLabels = ['00:00-04:00', '04:00-08:00', '08:00-12:00', '12:00-16:00', '16:00-20:00', '20:00-24:00'];
+    const completedCounts = [0, 0, 0, 0, 0, 0];
+    const weightTotals = [0, 0, 0, 0, 0, 0];
+    const slotTasks: string[][] = [[], [], [], [], [], []];
 
     const todayCompletedTasks = taskList.filter(
       (t) => t.status === 'completed' && t.endTime?.startsWith(today)
@@ -143,18 +151,19 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       if (!task.endTime) return;
       const hour = parseInt(task.endTime.split(' ')[1].split(':')[0], 10);
       let slot = 0;
-      if (hour >= 20) slot = 6;
-      else if (hour >= 16) slot = 5;
-      else if (hour >= 12) slot = 4;
-      else if (hour >= 8) slot = 3;
-      else if (hour >= 4) slot = 2;
-      else if (hour >= 0) slot = 1;
+      if (hour >= 20) slot = 5;
+      else if (hour >= 16) slot = 4;
+      else if (hour >= 12) slot = 3;
+      else if (hour >= 8) slot = 2;
+      else if (hour >= 4) slot = 1;
+      else slot = 0;
 
       completedCounts[slot]++;
       weightTotals[slot] += task.weight / 1000;
+      slotTasks[slot].push(`${task.id} ${task.cargo}${task.weight}kg`);
     });
 
-    return { timeLabels, completedCounts, weightTotals };
+    return { timeLabels, completedCounts, weightTotals, slotTasks };
   },
 
   getTaskTypeStats: () => {
@@ -182,5 +191,25 @@ export const useTaskStore = create<TaskState>((set, get) => ({
     return taskList
       .filter((t) => t.status === 'completed' && t.endTime?.startsWith(today))
       .reduce((sum, t) => sum + t.weight, 0) / 1000;
+  },
+
+  getAgvWorkRanking: () => {
+    const { taskList } = get();
+    const today = new Date().toLocaleDateString('zh-CN', { hour12: false }).replace(/\//g, '-');
+    const todayCompleted = taskList.filter(
+      (t) => t.status === 'completed' && t.endTime?.startsWith(today) && t.agvId
+    );
+    const rankMap: Record<string, { agvId: string; completedCount: number; totalWeight: number }> = {};
+    todayCompleted.forEach((t) => {
+      if (!t.agvId) return;
+      if (!rankMap[t.agvId]) {
+        rankMap[t.agvId] = { agvId: t.agvId, completedCount: 0, totalWeight: 0 };
+      }
+      rankMap[t.agvId].completedCount++;
+      rankMap[t.agvId].totalWeight += t.weight / 1000;
+    });
+    return Object.values(rankMap)
+      .sort((a, b) => b.completedCount - a.completedCount || b.totalWeight - a.totalWeight)
+      .map((r) => ({ ...r, agvName: '', totalWeight: Number(r.totalWeight.toFixed(1)) }));
   },
 }));

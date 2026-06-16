@@ -40,7 +40,7 @@ import type { ExceptionLevel } from '../../types/exception';
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { agvList, getAgvStats, getAgvById } = useAgvStore();
-  const { taskList, getTaskStats, getTodayTrendStats, getTaskTypeStats, getTodayTotalWeight } = useTaskStore();
+  const { taskList, getTaskStats, getTodayTrendStats, getTaskTypeStats, getTodayTotalWeight, getAgvWorkRanking } = useTaskStore();
   const { exceptionList, getExceptionStats } = useExceptionStore();
   const { getChargingStats } = useChargingStore();
   const { getTrafficStats } = useTrafficStore();
@@ -72,6 +72,15 @@ const Dashboard: React.FC = () => {
   const todayTotalWeight = Number(getTodayTotalWeight().toFixed(1));
   const trendStats = getTodayTrendStats();
   const typeStats = getTaskTypeStats();
+  const agvRanking = getAgvWorkRanking()
+    .map((r) => {
+      const agv = getAgvById(r.agvId);
+      return { ...r, agvName: agv?.name || r.agvId };
+    })
+    .slice(0, 3);
+
+  const rankMedals = ['🥇', '🥈', '🥉'];
+  const rankColors = ['#F59E0B', '#94A3B8', '#CD7F32'];
 
   const levelMap: Record<ExceptionLevel, { text: string; color: string }> = {
     critical: { text: '严重', color: 'red' },
@@ -82,9 +91,27 @@ const Dashboard: React.FC = () => {
   const taskTrendOption = {
     tooltip: {
       trigger: 'axis',
-      backgroundColor: 'rgba(15, 23, 42, 0.9)',
+      backgroundColor: 'rgba(15, 23, 42, 0.95)',
       borderColor: '#334155',
-      textStyle: { color: '#e2e8f0' },
+      textStyle: { color: '#e2e8f0', fontSize: 12 },
+      formatter: (params: any[]) => {
+        const idx = params[0].dataIndex;
+        const label = trendStats.timeLabels[idx];
+        const tasks = trendStats.slotTasks[idx];
+        let html = `<div style="font-weight:bold;margin-bottom:6px">${label}</div>`;
+        params.forEach((p: any) => {
+          html += `<div>${p.marker} ${p.seriesName}: <b>${p.value}</b></div>`;
+        });
+        if (tasks.length > 0) {
+          html += `<div style="margin-top:6px;padding-top:6px;border-top:1px solid #475569;font-size:11px;color:#94a3b8">`;
+          html += `<div style="margin-bottom:4px">任务明细：</div>`;
+          tasks.forEach((t) => {
+            html += `<div>• ${t}</div>`;
+          });
+          html += `</div>`;
+        }
+        return html;
+      },
     },
     grid: {
       left: '3%',
@@ -95,10 +122,10 @@ const Dashboard: React.FC = () => {
     },
     xAxis: {
       type: 'category',
-      boundaryGap: false,
+      boundaryGap: true,
       data: trendStats.timeLabels,
       axisLine: { lineStyle: { color: '#475569' } },
-      axisLabel: { color: '#94a3b8' },
+      axisLabel: { color: '#94a3b8', fontSize: 10, rotate: 20 },
     },
     yAxis: {
       type: 'value',
@@ -109,45 +136,23 @@ const Dashboard: React.FC = () => {
     series: [
       {
         name: '完成任务数',
-        type: 'line',
-        smooth: true,
+        type: 'bar',
+        barWidth: '30%',
         data: trendStats.completedCounts,
-        areaStyle: {
-          color: {
-            type: 'linear',
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: 'rgba(59, 130, 246, 0.5)' },
-              { offset: 1, color: 'rgba(59, 130, 246, 0.05)' },
-            ],
-          },
+        itemStyle: {
+          color: '#3b82f6',
+          borderRadius: [4, 4, 0, 0],
         },
-        lineStyle: { color: '#3b82f6', width: 2 },
-        itemStyle: { color: '#3b82f6' },
       },
       {
         name: '搬运量(吨)',
-        type: 'line',
-        smooth: true,
+        type: 'bar',
+        barWidth: '30%',
         data: trendStats.weightTotals.map((v) => Number(v.toFixed(1))),
-        areaStyle: {
-          color: {
-            type: 'linear',
-            x: 0,
-            y: 0,
-            x2: 0,
-            y2: 1,
-            colorStops: [
-              { offset: 0, color: 'rgba(16, 185, 129, 0.5)' },
-              { offset: 1, color: 'rgba(16, 185, 129, 0.05)' },
-            ],
-          },
+        itemStyle: {
+          color: '#10b981',
+          borderRadius: [4, 4, 0, 0],
         },
-        lineStyle: { color: '#10b981', width: 2 },
-        itemStyle: { color: '#10b981' },
       },
     ],
     legend: {
@@ -488,24 +493,7 @@ const Dashboard: React.FC = () => {
       </Row>
 
       <Row gutter={16}>
-        <Col span={10}>
-          <Card
-            title={
-              <span className="flex items-center gap-2">
-                <BarChartOutlined className="text-green-500" />
-                任务与搬运量趋势
-              </span>
-            }
-          >
-            <ReactECharts
-              option={taskTrendOption}
-              style={{ height: 280 }}
-              theme="dark"
-            />
-          </Card>
-        </Col>
-
-        <Col span={7}>
+        <Col span={12}>
           <Card
             title={
               <span className="flex items-center gap-2">
@@ -522,7 +510,7 @@ const Dashboard: React.FC = () => {
           </Card>
         </Col>
 
-        <Col span={7}>
+        <Col span={12}>
           <Card
             title={
               <span className="flex items-center gap-2">
@@ -648,6 +636,74 @@ const Dashboard: React.FC = () => {
                 )}
               />
             )}
+          </Card>
+        </Col>
+      </Row>
+
+      <Row gutter={16}>
+        <Col span={8}>
+          <Card
+            title={
+              <span className="flex items-center gap-2">
+                <CarOutlined className="text-yellow-500" />
+                今日AGV工作量排行
+              </span>
+            }
+          >
+            {agvRanking.length === 0 ? (
+              <div className="text-center py-8 text-gray-400">
+                <CarOutlined className="text-3xl mb-2" />
+                <p>暂无完成记录</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {agvRanking.map((item, idx) => (
+                  <div
+                    key={item.agvId}
+                    className="flex items-center gap-4 p-3 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors"
+                  >
+                    <div
+                      className="w-10 h-10 rounded-full flex items-center justify-center text-xl font-bold text-white"
+                      style={{ backgroundColor: rankColors[idx] }}
+                    >
+                      {idx + 1}
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between">
+                        <span className="font-medium text-gray-800">{item.agvName}</span>
+                        <span className="text-xs text-gray-500">{item.agvId}</span>
+                      </div>
+                      <div className="flex items-center gap-4 mt-1">
+                        <span className="text-sm text-blue-600">
+                          完成 <b>{item.completedCount}</b> 单
+                        </span>
+                        <span className="text-sm text-green-600">
+                          搬运 <b>{item.totalWeight}</b> 吨
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-2xl">{rankMedals[idx]}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+        </Col>
+
+        <Col span={16}>
+          <Card
+            title={
+              <span className="flex items-center gap-2">
+                <BarChartOutlined className="text-blue-500" />
+                任务与搬运量趋势
+              </span>
+            }
+          >
+            <ReactECharts
+              option={taskTrendOption}
+              style={{ height: 280 }}
+              theme="dark"
+            />
           </Card>
         </Col>
       </Row>

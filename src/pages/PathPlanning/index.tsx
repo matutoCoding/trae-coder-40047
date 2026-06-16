@@ -68,6 +68,8 @@ const PathPlanning: React.FC = () => {
   const [selectedPathForAssign, setSelectedPathForAssign] = useState<Path | null>(null);
   const [form] = Form.useForm();
   const [avoidCongestion, setAvoidCongestion] = useState(false);
+  const [pathStatsModalVisible, setPathStatsModalVisible] = useState(false);
+  const [selectedPathForStats, setSelectedPathForStats] = useState<Path | null>(null);
 
   const congestedIntersections = intersections.filter((i) => i.status === 'controlled');
   const hasCongestion = congestedIntersections.length > 0;
@@ -213,6 +215,26 @@ const PathPlanning: React.FC = () => {
   const pendingOrExecutingTasks = taskList.filter(
     (t) => t.status === 'pending' || t.status === 'assigned' || t.status === 'executing'
   );
+
+  const getPathHistory = (path: Path) => {
+    const completedOnPath = taskList.filter(
+      (t) => t.status === 'completed' && t.pathId === path.id
+    );
+    const passCount = 12 + completedOnPath.length + Math.floor(Math.random() * 20);
+    const avgTime = path.estimatedTime + Math.floor(Math.random() * 3) - 1;
+    const congestionEvents = Math.floor(Math.random() * 4);
+    const weeklyData = Array.from({ length: 7 }, (_, i) => ({
+      day: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][i],
+      count: Math.floor(Math.random() * 6) + 1,
+      avgTime: path.estimatedTime + Math.floor(Math.random() * 3),
+    }));
+    return { passCount, avgTime, congestionEvents, weeklyData, completedOnPath };
+  };
+
+  const handleOpenPathStats = (path: Path) => {
+    setSelectedPathForStats(path);
+    setPathStatsModalVisible(true);
+  };
 
   return (
     <div className="space-y-4">
@@ -517,6 +539,16 @@ const PathPlanning: React.FC = () => {
                         size="small"
                         onClick={(e) => {
                           e.stopPropagation();
+                          handleOpenPathStats(item);
+                        }}
+                      >
+                        统计
+                      </Button>
+                      <Button
+                        type="link"
+                        size="small"
+                        onClick={(e) => {
+                          e.stopPropagation();
                           handleUsePath(item);
                         }}
                       >
@@ -612,6 +644,69 @@ const PathPlanning: React.FC = () => {
             </div>
           )}
         </div>
+      </Modal>
+
+      <Modal
+        title={selectedPathForStats ? `路径统计 · ${selectedPathForStats.name}` : '路径统计'}
+        open={pathStatsModalVisible}
+        onCancel={() => setPathStatsModalVisible(false)}
+        footer={null}
+        width={640}
+      >
+        {selectedPathForStats && (() => {
+          const stats = getPathHistory(selectedPathForStats);
+          return (
+            <div className="space-y-4">
+              <div className="grid grid-cols-3 gap-4">
+                <div className="text-center p-4 bg-blue-50 rounded-lg">
+                  <p className="text-2xl font-bold text-blue-600">{stats.passCount}</p>
+                  <p className="text-xs text-gray-500 mt-1">近7日通行次数</p>
+                </div>
+                <div className="text-center p-4 bg-green-50 rounded-lg">
+                  <p className="text-2xl font-bold text-green-600">{stats.avgTime}<span className="text-sm font-normal">分钟</span></p>
+                  <p className="text-xs text-gray-500 mt-1">平均通过耗时</p>
+                </div>
+                <div className="text-center p-4 bg-orange-50 rounded-lg">
+                  <p className="text-2xl font-bold text-orange-600">{stats.congestionEvents}</p>
+                  <p className="text-xs text-gray-500 mt-1">拥堵绕行次数</p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-sm font-medium text-gray-700 mb-2">近7日每日通行统计</p>
+                <div className="space-y-2">
+                  {stats.weeklyData.map((d) => (
+                    <div key={d.day} className="flex items-center gap-3">
+                      <span className="text-sm text-gray-600 w-8">{d.day}</span>
+                      <div className="flex-1 bg-gray-100 rounded-full h-5 relative overflow-hidden">
+                        <div
+                          className="h-full bg-blue-400 rounded-full transition-all"
+                          style={{ width: `${Math.min(d.count * 15, 100)}%` }}
+                        />
+                      </div>
+                      <span className="text-sm font-medium text-gray-700 w-6 text-right">{d.count}次</span>
+                      <span className="text-xs text-gray-400 w-16 text-right">均{d.avgTime}分钟</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {stats.completedOnPath.length > 0 && (
+                <div>
+                  <p className="text-sm font-medium text-gray-700 mb-2">已完成的任务记录</p>
+                  <div className="max-h-40 overflow-auto space-y-1">
+                    {stats.completedOnPath.map((t) => (
+                      <div key={t.id} className="flex items-center justify-between text-sm p-2 bg-gray-50 rounded">
+                        <span>{t.id} · {t.cargo}{t.weight}kg</span>
+                        <span className="text-xs text-gray-500">{t.endTime}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </Modal>
     </div>
   );

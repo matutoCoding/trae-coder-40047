@@ -1,4 +1,4 @@
-export type TaskStatus = 'pending' | 'assigned' | 'executing' | 'completed' | 'exception' | 'cancelled';
+export type TaskStatus = 'pending' | 'scheduled' | 'assigned' | 'executing' | 'completed' | 'exception' | 'cancelled';
 export type TaskType = 'transport' | 'replenish' | 'inventory';
 export type TaskPriority = 'high' | 'medium' | 'low';
 
@@ -16,6 +16,7 @@ export interface Task {
   createTime: string;
   startTime?: string;
   endTime?: string;
+  scheduledTime?: string;
   priority: TaskPriority;
   description?: string;
 }

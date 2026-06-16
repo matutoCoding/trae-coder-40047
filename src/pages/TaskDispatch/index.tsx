@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Table,
   Button,
@@ -22,6 +22,7 @@ import {
   Alert,
   Progress,
   List,
+  DatePicker,
 } from 'antd';
 import {
   PlusOutlined,
@@ -36,6 +37,7 @@ import {
   EnvironmentOutlined,
   SwapOutlined,
   ThunderboltOutlined,
+  FieldTimeOutlined,
 } from '@ant-design/icons';
 import { useTaskStore } from '../../store/taskStore';
 import { useAgvStore } from '../../store/agvStore';
@@ -74,11 +76,41 @@ const TaskDispatch: React.FC = () => {
   const [form] = Form.useForm();
   const [formStartPoint, setFormStartPoint] = useState<string>('');
   const [formEndPoint, setFormEndPoint] = useState<string>('');
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const scheduledTasks = taskList.filter(
+      (t) => t.status === 'scheduled' && t.scheduledTime
+    );
+    scheduledTasks.forEach((task) => {
+      const scheduled = new Date(task.scheduledTime!);
+      if (now >= scheduled) {
+        const matchedAgv = [...availableAgvs]
+          .filter((agv) => agv.maxLoad >= task.weight)
+          .sort((a, b) => b.battery - a.battery)[0];
+        if (matchedAgv) {
+          assignTask(task.id, matchedAgv.id);
+          updateAgvStatus(matchedAgv.id, 'running');
+          updateAgv(matchedAgv.id, { currentTaskId: task.id });
+          message.success(`定时任务 ${task.id} 已自动派发给 ${matchedAgv.name}`);
+        } else {
+          updateTaskStatus(task.id, 'pending');
+          message.warning(`定时任务 ${task.id} 到达生效时间，但无可用车辆，已转为待派发`);
+        }
+      }
+    });
+  }, [now]);
 
   const stats = getTaskStats();
 
   const statusMap: Record<TaskStatus, { text: string; color: string; icon: React.ReactNode }> = {
     pending: { text: '待派发', color: 'default', icon: <ClockCircleOutlined /> },
+    scheduled: { text: '定时派发', color: 'purple', icon: <FieldTimeOutlined /> },
     assigned: { text: '已派发', color: 'blue', icon: <SendOutlined /> },
     executing: { text: '执行中', color: 'processing', icon: <PlayCircleOutlined /> },
     completed: { text: '已完成', color: 'success', icon: <CheckCircleOutlined /> },
@@ -119,6 +151,18 @@ const TaskDispatch: React.FC = () => {
   const availableAgvs = agvList.filter(
     (agv) => agv.status === 'idle' && agv.battery > 30
   );
+
+  const getCountdown = (scheduledTime: string): string => {
+    const target = new Date(scheduledTime);
+    const diff = target.getTime() - now.getTime();
+    if (diff <= 0) return '即将派发';
+    const hours = Math.floor(diff / 3600000);
+    const minutes = Math.floor((diff % 3600000) / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    if (hours > 0) return `${hours}时${minutes}分${seconds}秒`;
+    if (minutes > 0) return `${minutes}分${seconds}秒`;
+    return `${seconds}秒`;
+  };
 
   const locationOptions = mapPoints
     .filter((p) => p.type !== 'intersection')
@@ -192,11 +236,15 @@ const TaskDispatch: React.FC = () => {
         message.error('请先选择起点和终点');
         return;
       }
+      const scheduledTime = values.scheduledTime
+        ? values.scheduledTime.format('YYYY-MM-DD HH:mm:ss')
+        : undefined;
       addTask({
         ...values,
-        status: 'pending',
+        scheduledTime,
+        status: scheduledTime ? 'scheduled' : 'pending',
       });
-      message.success('任务创建成功');
+      message.success(scheduledTime ? '定时派发任务创建成功' : '任务创建成功');
       setModalVisible(false);
       setFormStartPoint('');
       setFormEndPoint('');
@@ -223,7 +271,7 @@ const TaskDispatch: React.FC = () => {
       return;
     }
     const pendingSelected = taskList.filter(
-      (t) => selectedRowKeys.includes(t.id) && t.status === 'pending'
+      (t) => selectedRowKeys.includes(t.id) && (t.status === 'pending' || t.status === 'scheduled')
     );
     if (pendingSelected.length === 0) {
       message.warning('选中的任务中没有待派发状态的任务');
@@ -239,8 +287,9 @@ const TaskDispatch: React.FC = () => {
     const results: BatchDispatchResult[] = [];
 
     sortedTasks.forEach((task) => {
-      const matchedAgv = [...availableAgvs]
-        .filter((agv) => !usedAgvIds.has(agv.id) && agv.maxLoad >= task.weight)
+      const remainingAgvs = [...availableAgvs].filter((agv) => !usedAgvIds.has(agv.id));
+      const matchedAgv = remainingAgvs
+        .filter((agv) => agv.maxLoad >= task.weight)
         .sort((a, b) => b.battery - a.battery)[0];
 
       if (matchedAgv) {
@@ -257,11 +306,24 @@ const TaskDispatch: React.FC = () => {
         });
       } else {
         let reason = '无可用车辆';
-        const loadIssue = availableAgvs.filter((a) => !usedAgvIds.has(a.id) && a.maxLoad < task.weight).length;
-        const noIdle = availableAgvs.filter((a) => !usedAgvIds.has(a.id)).length === 0;
-        if (noIdle) reason = '所有待命车辆已被分配';
-        else if (loadIssue > 0) reason = `车辆载重不足(需要≥${task.weight}kg)`;
-        else if (availableAgvs.length === 0) reason = '无待命且电量充足的车辆';
+        const allIdleAgvs = agvList.filter((a) => a.status === 'idle');
+        const idleButLowBattery = allIdleAgvs.filter((a) => a.battery <= 30);
+        const idleButUsedUp = availableAgvs.filter((a) => usedAgvIds.has(a.id));
+
+        if (allIdleAgvs.length === 0) {
+          reason = '没有待命车辆（全部运行中/充电中/故障/维护中）';
+        } else if (remainingAgvs.length === 0 && idleButUsedUp.length > 0) {
+          reason = `所有${availableAgvs.length}辆待命车辆已被前面的任务分配完`;
+        } else if (remainingAgvs.length > 0 && remainingAgvs.every((a) => a.maxLoad < task.weight)) {
+          const maxCap = Math.max(...remainingAgvs.map((a) => a.maxLoad));
+          reason = `剩余车辆载重不足（需要≥${task.weight}kg，最大仅${maxCap}kg）`;
+        } else if (allIdleAgvs.length > 0 && availableAgvs.length === 0) {
+          reason = `${allIdleAgvs.length}辆待命车辆电量均≤30%，需先充电`;
+        } else if (idleButLowBattery.length > 0 && remainingAgvs.length === 0) {
+          reason = `可用车辆已全部分配，${idleButLowBattery.length}辆低电量车辆等待充电`;
+        } else {
+          reason = '无匹配车辆（载重或电量条件不满足）';
+        }
         results.push({
           taskId: task.id,
           taskName: task.name,
@@ -363,11 +425,18 @@ const TaskDispatch: React.FC = () => {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
-      width: 100,
-      render: (status: TaskStatus) => (
-        <Tag icon={statusMap[status]?.icon} color={statusMap[status]?.color}>
-          {statusMap[status]?.text}
-        </Tag>
+      width: 160,
+      render: (status: TaskStatus, record: Task) => (
+        <div>
+          <Tag icon={statusMap[status]?.icon} color={statusMap[status]?.color}>
+            {statusMap[status]?.text}
+          </Tag>
+          {status === 'scheduled' && record.scheduledTime && (
+            <div className="text-xs text-purple-600 mt-1 font-mono">
+              <FieldTimeOutlined /> {getCountdown(record.scheduledTime)}
+            </div>
+          )}
+        </div>
       ),
     },
     {
@@ -386,7 +455,7 @@ const TaskDispatch: React.FC = () => {
           <Button type="link" size="small" onClick={() => handleDetail(record)}>
             详情
           </Button>
-          {record.status === 'pending' && (
+          {(record.status === 'pending' || record.status === 'scheduled') && (
             <Button
               type="primary"
               size="small"
@@ -465,7 +534,7 @@ const TaskDispatch: React.FC = () => {
     selectedRowKeys,
     onChange: setSelectedRowKeys,
     getCheckboxProps: (record: Task) => ({
-      disabled: record.status !== 'pending',
+      disabled: record.status !== 'pending' && record.status !== 'scheduled',
     }),
   };
 
@@ -559,6 +628,7 @@ const TaskDispatch: React.FC = () => {
             >
               <Option value="all">全部状态</Option>
               <Option value="pending">待派发</Option>
+              <Option value="scheduled">定时派发</Option>
               <Option value="assigned">已派发</Option>
               <Option value="executing">执行中</Option>
               <Option value="completed">已完成</Option>
@@ -718,6 +788,18 @@ const TaskDispatch: React.FC = () => {
                   <Option value="medium">中优先级</Option>
                   <Option value="low">低优先级</Option>
                 </Select>
+              </Form.Item>
+              <Form.Item
+                name="scheduledTime"
+                label="定时派发（可选）"
+                tooltip="指定时间后，系统到点自动按批量派发规则匹配车辆"
+              >
+                <DatePicker
+                  showTime
+                  format="YYYY-MM-DD HH:mm:ss"
+                  placeholder="不指定则为立即待派发"
+                  style={{ width: '100%' }}
+                />
               </Form.Item>
               <Form.Item name="description" label="任务描述">
                 <Input.TextArea rows={2} placeholder="请输入任务描述信息" />
