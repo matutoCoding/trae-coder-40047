@@ -50,7 +50,13 @@ const Charging: React.FC = () => {
   );
 
   const chargingRecords = records.filter((r) => r.status === 'charging');
-  const completedRecords = records.filter((r) => r.status === 'completed').slice(0, 10);
+  const allRecords = [...records].sort((a, b) => {
+    if (a.status === 'charging' && b.status !== 'charging') return -1;
+    if (a.status !== 'charging' && b.status === 'charging') return 1;
+    const timeA = new Date(a.endTime || a.startTime).getTime();
+    const timeB = new Date(b.endTime || b.startTime).getTime();
+    return timeB - timeA;
+  });
 
   const handleDispatch = (station: ChargingStation) => {
     setSelectedStation(station);
@@ -237,6 +243,23 @@ const Charging: React.FC = () => {
         </Tag>
       ),
     },
+    {
+      title: '操作',
+      key: 'action',
+      width: 100,
+      render: (_: unknown, record: any) => (
+        record.status === 'charging' ? (
+          <Button
+            type="link"
+            size="small"
+            danger
+            onClick={() => handleStopCharging(record.id, record.agvId)}
+          >
+            结束充电
+          </Button>
+        ) : null
+      ),
+    },
   ];
 
   return (
@@ -407,7 +430,7 @@ const Charging: React.FC = () => {
       <Card title="充电记录">
         <Table
           columns={recordColumns}
-          dataSource={completedRecords}
+          dataSource={allRecords}
           rowKey="id"
           pagination={{
             pageSize: 10,

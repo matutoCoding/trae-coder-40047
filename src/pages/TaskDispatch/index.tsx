@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Table,
   Button,
@@ -18,6 +18,10 @@ import {
   Timeline,
   Descriptions,
   Tooltip,
+  Checkbox,
+  Alert,
+  Progress,
+  List,
 } from 'antd';
 import {
   PlusOutlined,
@@ -30,14 +34,28 @@ import {
   SendOutlined,
   CarOutlined,
   EnvironmentOutlined,
+  SwapOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useTaskStore } from '../../store/taskStore';
 import { useAgvStore } from '../../store/agvStore';
 import type { Task, TaskStatus, TaskPriority, TaskType } from '../../types/task';
+import type { MapPoint, Waypoint } from '../../types/path';
+import { mapPoints } from '../../mock/path';
+import AgvMap from '../../components/Map/AgvMap';
 
 const { Option } = Select;
 const { confirm } = Modal;
 const { TabPane } = Tabs;
+
+interface BatchDispatchResult {
+  taskId: string;
+  taskName: string;
+  success: boolean;
+  agvId?: string;
+  agvName?: string;
+  reason?: string;
+}
 
 const TaskDispatch: React.FC = () => {
   const { taskList, addTask, updateTaskStatus, assignTask, completeTask, getTaskStats, getTaskById } = useTaskStore();
@@ -49,7 +67,13 @@ const TaskDispatch: React.FC = () => {
   const [detailVisible, setDetailVisible] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [assignModalVisible, setAssignModalVisible] = useState(false);
+  const [batchModalVisible, setBatchModalVisible] = useState(false);
+  const [batchResults, setBatchResults] = useState<BatchDispatchResult[]>([]);
+  const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [mapSelectMode, setMapSelectMode] = useState<'start' | 'end' | null>(null);
   const [form] = Form.useForm();
+  const [formStartPoint, setFormStartPoint] = useState<string>('');
+  const [formEndPoint, setFormEndPoint] = useState<string>('');
 
   const stats = getTaskStats();
 
@@ -90,12 +114,37 @@ const TaskDispatch: React.FC = () => {
       return matchesSearch && matchesStatus && matchesPriority;
     });
 
+  const pendingTasks = filteredTaskList.filter((t) => t.status === 'pending');
+
   const availableAgvs = agvList.filter(
     (agv) => agv.status === 'idle' && agv.battery > 30
   );
 
+  const locationOptions = mapPoints
+    .filter((p) => p.type !== 'intersection')
+    .map((p) => ({ label: p.name, value: p.name }));
+
+  const previewPath: Waypoint[] | undefined = useMemo(() => {
+    if (!formStartPoint || !formEndPoint) return undefined;
+    const start = mapPoints.find((p) => p.name === formStartPoint);
+    const end = mapPoints.find((p) => p.name === formEndPoint);
+    if (!start || !end) return undefined;
+    const midX = (start.x + end.x) / 2;
+    const midY = (start.y + end.y) / 2;
+    return [
+      { x: start.x, y: start.y, name: start.name },
+      { x: start.x, y: midY },
+      { x: end.x, y: midY },
+      { x: end.x, y: end.y, name: end.name },
+    ];
+  }, [formStartPoint, formEndPoint]);
+
+  const findPointByName = (name: string) => mapPoints.find((p) => p.name === name);
+
   const handleAdd = () => {
     form.resetFields();
+    setFormStartPoint('');
+    setFormEndPoint('');
     setModalVisible(true);
   };
 
@@ -139,13 +188,92 @@ const TaskDispatch: React.FC = () => {
 
   const handleSubmit = () => {
     form.validateFields().then((values) => {
+      if (!values.startPoint || !values.endPoint) {
+        message.error('请先选择起点和终点');
+        return;
+      }
       addTask({
         ...values,
         status: 'pending',
       });
       message.success('任务创建成功');
       setModalVisible(false);
+      setFormStartPoint('');
+      setFormEndPoint('');
     });
+  };
+
+  const handleMapPointClick = (point: MapPoint) => {
+    if (mapSelectMode === 'start') {
+      setFormStartPoint(point.name);
+      form.setFieldValue('startPoint', point.name);
+      setMapSelectMode(null);
+      message.success(`已选择起点: ${point.name}`);
+    } else if (mapSelectMode === 'end') {
+      setFormEndPoint(point.name);
+      form.setFieldValue('endPoint', point.name);
+      setMapSelectMode(null);
+      message.success(`已选择终点: ${point.name}`);
+    }
+  };
+
+  const handleBatchDispatch = () => {
+    if (selectedRowKeys.length === 0) {
+      message.warning('请先勾选要派发的任务');
+      return;
+    }
+    const pendingSelected = taskList.filter(
+      (t) => selectedRowKeys.includes(t.id) && t.status === 'pending'
+    );
+    if (pendingSelected.length === 0) {
+      message.warning('选中的任务中没有待派发状态的任务');
+      return;
+    }
+
+    const sortedTasks = [...pendingSelected].sort((a, b) => {
+      const priorityScore: Record<TaskPriority, number> = { high: 3, medium: 2, low: 1 };
+      return priorityScore[b.priority] - priorityScore[a.priority];
+    });
+
+    const usedAgvIds = new Set<string>();
+    const results: BatchDispatchResult[] = [];
+
+    sortedTasks.forEach((task) => {
+      const matchedAgv = [...availableAgvs]
+        .filter((agv) => !usedAgvIds.has(agv.id) && agv.maxLoad >= task.weight)
+        .sort((a, b) => b.battery - a.battery)[0];
+
+      if (matchedAgv) {
+        assignTask(task.id, matchedAgv.id);
+        updateAgvStatus(matchedAgv.id, 'running');
+        updateAgv(matchedAgv.id, { currentTaskId: task.id });
+        usedAgvIds.add(matchedAgv.id);
+        results.push({
+          taskId: task.id,
+          taskName: task.name,
+          success: true,
+          agvId: matchedAgv.id,
+          agvName: matchedAgv.name,
+        });
+      } else {
+        let reason = '无可用车辆';
+        const loadIssue = availableAgvs.filter((a) => !usedAgvIds.has(a.id) && a.maxLoad < task.weight).length;
+        const noIdle = availableAgvs.filter((a) => !usedAgvIds.has(a.id)).length === 0;
+        if (noIdle) reason = '所有待命车辆已被分配';
+        else if (loadIssue > 0) reason = `车辆载重不足(需要≥${task.weight}kg)`;
+        else if (availableAgvs.length === 0) reason = '无待命且电量充足的车辆';
+        results.push({
+          taskId: task.id,
+          taskName: task.name,
+          success: false,
+          reason,
+        });
+      }
+    });
+
+    setBatchResults(results);
+    setBatchModalVisible(true);
+    setSelectedRowKeys([]);
   };
 
   const columns = [
@@ -333,13 +461,31 @@ const TaskDispatch: React.FC = () => {
     return <Timeline items={items} />;
   };
 
+  const rowSelection = {
+    selectedRowKeys,
+    onChange: setSelectedRowKeys,
+    getCheckboxProps: (record: Task) => ({
+      disabled: record.status !== 'pending',
+    }),
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold text-gray-800">任务派发管理</h2>
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
-          新建任务
-        </Button>
+        <Space>
+          <Button
+            type="primary"
+            icon={<SendOutlined />}
+            onClick={handleBatchDispatch}
+            disabled={selectedRowKeys.length === 0}
+          >
+            批量派发 {selectedRowKeys.length > 0 && `(${selectedRowKeys.length})`}
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
+            新建任务
+          </Button>
+        </Space>
       </div>
 
       <Row gutter={16}>
@@ -431,10 +577,14 @@ const TaskDispatch: React.FC = () => {
           </Space>
           <span className="text-sm text-gray-500">
             共 {filteredTaskList.length} 条任务
+            {pendingTasks.length > 0 && (
+              <Tag color="default" className="ml-2">{pendingTasks.length} 条待派发</Tag>
+            )}
           </span>
         </div>
 
         <Table
+          rowSelection={rowSelection}
           columns={columns}
           dataSource={filteredTaskList}
           rowKey="id"
@@ -452,115 +602,193 @@ const TaskDispatch: React.FC = () => {
         title="新建任务"
         open={modalVisible}
         onOk={handleSubmit}
-        onCancel={() => setModalVisible(false)}
+        onCancel={() => {
+          setModalVisible(false);
+          setMapSelectMode(null);
+        }}
         okText="创建任务"
         cancelText="取消"
-        width={600}
+        width={900}
+        maskClosable={false}
       >
-        <Form form={form} layout="vertical" className="mt-4">
-          <Row gutter={16}>
-            <Col span={12}>
+        <div className="grid grid-cols-2 gap-4 mt-4">
+          <div>
+            <Form form={form} layout="vertical">
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item
+                    name="name"
+                    label="任务名称"
+                    rules={[{ required: true, message: '请输入任务名称' }]}
+                  >
+                    <Input placeholder="请输入任务名称" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item
+                    name="type"
+                    label="任务类型"
+                    rules={[{ required: true, message: '请选择任务类型' }]}
+                    initialValue="transport"
+                  >
+                    <Select>
+                      <Option value="transport">搬运任务</Option>
+                      <Option value="replenish">补货任务</Option>
+                      <Option value="inventory">盘点任务</Option>
+                    </Select>
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item
+                    name="startPoint"
+                    label="起点"
+                    rules={[{ required: true, message: '请选择起点' }]}
+                  >
+                    <Input
+                      placeholder="点击右侧地图选择起点"
+                      value={formStartPoint}
+                      readOnly
+                      addonAfter={
+                        <Button
+                          type={mapSelectMode === 'start' ? 'primary' : 'default'}
+                          size="small"
+                          icon={<EnvironmentOutlined className="text-green-500" />}
+                          onClick={() => setMapSelectMode(mapSelectMode === 'start' ? null : 'start')}
+                        >
+                          {mapSelectMode === 'start' ? '选择中...' : '点选'}
+                        </Button>
+                      }
+                    />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item
+                    name="endPoint"
+                    label="终点"
+                    rules={[{ required: true, message: '请选择终点' }]}
+                  >
+                    <Input
+                      placeholder="点击右侧地图选择终点"
+                      value={formEndPoint}
+                      readOnly
+                      addonAfter={
+                        <Button
+                          type={mapSelectMode === 'end' ? 'primary' : 'default'}
+                          size="small"
+                          icon={<EnvironmentOutlined className="text-red-500" />}
+                          onClick={() => setMapSelectMode(mapSelectMode === 'end' ? null : 'end')}
+                        >
+                          {mapSelectMode === 'end' ? '选择中...' : '点选'}
+                        </Button>
+                      }
+                    />
+                  </Form.Item>
+                </Col>
+              </Row>
+              <Row gutter={16}>
+                <Col span={12}>
+                  <Form.Item
+                    name="cargo"
+                    label="货物名称"
+                    rules={[{ required: true, message: '请输入货物名称' }]}
+                  >
+                    <Input placeholder="请输入货物名称" />
+                  </Form.Item>
+                </Col>
+                <Col span={12}>
+                  <Form.Item
+                    name="weight"
+                    label="货物重量(kg)"
+                    rules={[{ required: true, message: '请输入货物重量' }]}
+                  >
+                    <InputNumber min={0} style={{ width: '100%' }} />
+                  </Form.Item>
+                </Col>
+              </Row>
               <Form.Item
-                name="name"
-                label="任务名称"
-                rules={[{ required: true, message: '请输入任务名称' }]}
-              >
-                <Input placeholder="请输入任务名称" />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="type"
-                label="任务类型"
-                rules={[{ required: true, message: '请选择任务类型' }]}
-                initialValue="transport"
+                name="priority"
+                label="优先级"
+                rules={[{ required: true, message: '请选择优先级' }]}
+                initialValue="medium"
               >
                 <Select>
-                  <Option value="transport">搬运任务</Option>
-                  <Option value="replenish">补货任务</Option>
-                  <Option value="inventory">盘点任务</Option>
+                  <Option value="high">高优先级</Option>
+                  <Option value="medium">中优先级</Option>
+                  <Option value="low">低优先级</Option>
                 </Select>
               </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="startPoint"
-                label="起点"
-                rules={[{ required: true, message: '请选择起点' }]}
-              >
-                <Select placeholder="请选择起点">
-                  <Option value="原料仓库A">原料仓库A</Option>
-                  <Option value="成品仓库A">成品仓库A</Option>
-                  <Option value="成品仓库B">成品仓库B</Option>
-                  <Option value="备件库">备件库</Option>
-                  <Option value="炼钢车间1号">炼钢车间1号</Option>
-                  <Option value="轧钢车间">轧钢车间</Option>
-                  <Option value="加工车间">加工车间</Option>
-                  <Option value="维修车间">维修车间</Option>
-                  <Option value="废钢堆场">废钢堆场</Option>
-                  <Option value="发货区">发货区</Option>
-                </Select>
+              <Form.Item name="description" label="任务描述">
+                <Input.TextArea rows={2} placeholder="请输入任务描述信息" />
               </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="endPoint"
-                label="终点"
-                rules={[{ required: true, message: '请选择终点' }]}
-              >
-                <Select placeholder="请选择终点">
-                  <Option value="原料仓库A">原料仓库A</Option>
-                  <Option value="成品仓库A">成品仓库A</Option>
-                  <Option value="成品仓库B">成品仓库B</Option>
-                  <Option value="备件库">备件库</Option>
-                  <Option value="炼钢车间1号">炼钢车间1号</Option>
-                  <Option value="轧钢车间">轧钢车间</Option>
-                  <Option value="加工车间">加工车间</Option>
-                  <Option value="维修车间">维修车间</Option>
-                  <Option value="废钢堆场">废钢堆场</Option>
-                  <Option value="发货区">发货区</Option>
-                </Select>
-              </Form.Item>
-            </Col>
-          </Row>
-          <Row gutter={16}>
-            <Col span={12}>
-              <Form.Item
-                name="cargo"
-                label="货物名称"
-                rules={[{ required: true, message: '请输入货物名称' }]}
-              >
-                <Input placeholder="请输入货物名称" />
-              </Form.Item>
-            </Col>
-            <Col span={12}>
-              <Form.Item
-                name="weight"
-                label="货物重量(kg)"
-                rules={[{ required: true, message: '请输入货物重量' }]}
-              >
-                <InputNumber min={0} style={{ width: '100%' }} />
-              </Form.Item>
-            </Col>
-          </Row>
-          <Form.Item
-            name="priority"
-            label="优先级"
-            rules={[{ required: true, message: '请选择优先级' }]}
-            initialValue="medium"
-          >
-            <Select>
-              <Option value="high">高优先级</Option>
-              <Option value="medium">中优先级</Option>
-              <Option value="low">低优先级</Option>
-            </Select>
-          </Form.Item>
-          <Form.Item name="description" label="任务描述">
-            <Input.TextArea rows={3} placeholder="请输入任务描述信息" />
-          </Form.Item>
-        </Form>
+            </Form>
+
+            {previewPath && (
+              <Alert
+                message="路线预览"
+                description={`${formStartPoint} → ${formEndPoint}，请确认路线是否符合预期`}
+                type="info"
+                showIcon
+              />
+            )}
+            {mapSelectMode && (
+              <Alert
+                message={`请在右侧地图上点击选择${mapSelectMode === 'start' ? '起点' : '终点'}`}
+                type="warning"
+                showIcon
+                className="mt-3"
+              />
+            )}
+          </div>
+          <div className="bg-slate-100 rounded-lg p-2">
+            <div className="text-sm text-gray-600 mb-2 flex items-center justify-between">
+              <span>地图预览（点击地点选择起终点）</span>
+              {formStartPoint && formEndPoint && (
+                <Button
+                  size="small"
+                  icon={<SwapOutlined />}
+                  onClick={() => {
+                    const temp = formStartPoint;
+                    setFormStartPoint(formEndPoint);
+                    setFormEndPoint(temp);
+                    form.setFieldValue('startPoint', formEndPoint);
+                    form.setFieldValue('endPoint', temp);
+                  }}
+                >
+                  交换
+                </Button>
+              )}
+            </div>
+            <AgvMap
+              height={360}
+              onPointClick={handleMapPointClick}
+              selectedPath={previewPath}
+              showPaths={true}
+              highlightPoint={
+                formStartPoint
+                  ? { name: formStartPoint, type: 'start' }
+                  : formEndPoint
+                    ? { name: formEndPoint, type: 'end' }
+                    : null
+              }
+            />
+            <div className="mt-2 flex gap-4 text-xs text-gray-500">
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full bg-green-500"></span>
+                起点
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full bg-red-500"></span>
+                终点
+              </span>
+              <span className="flex items-center gap-1">
+                <span className="inline-block w-3 h-1 bg-orange-500"></span>
+                规划路线
+              </span>
+            </div>
+          </div>
+        </div>
       </Modal>
 
       <Modal
@@ -638,20 +866,67 @@ const TaskDispatch: React.FC = () => {
                     <div>
                       <p className="font-medium">{agv.name}</p>
                       <p className="text-sm text-gray-500">
-                        {agv.id} · {agv.model}
+                        {agv.id} · {agv.model} · 载重 {agv.maxLoad}kg
                       </p>
                     </div>
                   </div>
-                  <div className="text-right">
+                  <div className="text-right w-28">
                     <p className="text-sm text-gray-500">电量</p>
-                    <p className="font-mono font-medium text-green-600">
-                      {agv.battery}%
-                    </p>
+                    <Progress percent={agv.battery} size="small" />
                   </div>
                 </div>
               ))}
             </div>
           )}
+        </div>
+      </Modal>
+
+      <Modal
+        title="批量派发结果"
+        open={batchModalVisible}
+        onCancel={() => setBatchModalVisible(false)}
+        footer={[
+          <Button type="primary" onClick={() => setBatchModalVisible(false)}>
+            确定
+          </Button>,
+        ]}
+        width={600}
+      >
+        <div className="mt-4 space-y-3">
+          <Alert
+            message={`派发完成：成功 ${batchResults.filter((r) => r.success).length} 条，失败 ${batchResults.filter((r) => !r.success).length} 条`}
+            type={batchResults.every((r) => r.success) ? 'success' : 'warning'}
+            showIcon
+          />
+          <List
+            dataSource={batchResults}
+            renderItem={(item) => (
+              <List.Item className="border rounded-lg px-3 py-2">
+                <div className="w-full flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {item.success ? (
+                      <CheckCircleOutlined className="text-green-500 text-lg" />
+                    ) : (
+                      <ExclamationCircleOutlined className="text-red-500 text-lg" />
+                    )}
+                    <div>
+                      <p className="font-medium">
+                        {item.taskId} · {item.taskName}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {item.success
+                          ? `已分配：${item.agvName} (${item.agvId})`
+                          : `分配失败：${item.reason}`}
+                      </p>
+                    </div>
+                  </div>
+                  <Tag color={item.success ? 'green' : 'red'}>
+                    {item.success ? '成功' : '失败'}
+                  </Tag>
+                </div>
+              </List.Item>
+            )}
+          />
         </div>
       </Modal>
     </div>

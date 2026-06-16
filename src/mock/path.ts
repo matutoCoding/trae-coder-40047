@@ -1,4 +1,4 @@
-import type { Path } from '../types/path';
+import type { Path, MapPoint } from '../types/path';
 
 export const mockPathList: Path[] = [
   {
@@ -85,7 +85,7 @@ export const mockPathList: Path[] = [
   },
 ];
 
-export const mapPoints = [
+export const mapPoints: MapPoint[] = [
   { x: 80, y: 200, name: '原料仓库A', type: 'warehouse' },
   { x: 100, y: 350, name: '成品仓库A', type: 'warehouse' },
   { x: 650, y: 350, name: '成品仓库B', type: 'warehouse' },

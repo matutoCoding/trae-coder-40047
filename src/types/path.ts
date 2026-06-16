@@ -17,3 +17,12 @@ export interface Path {
   type: PathType;
   createTime: string;
 }
+
+export type MapPointType = 'warehouse' | 'workshop' | 'yard' | 'dock' | 'charging' | 'intersection';
+
+export interface MapPoint {
+  name: string;
+  type: MapPointType;
+  x: number;
+  y: number;
+}

@@ -40,7 +40,7 @@ import type { ExceptionLevel } from '../../types/exception';
 const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const { agvList, getAgvStats, getAgvById } = useAgvStore();
-  const { taskList, getTaskStats } = useTaskStore();
+  const { taskList, getTaskStats, getTodayTrendStats, getTaskTypeStats, getTodayTotalWeight } = useTaskStore();
   const { exceptionList, getExceptionStats } = useExceptionStore();
   const { getChargingStats } = useChargingStore();
   const { getTrafficStats } = useTrafficStore();
@@ -69,6 +69,10 @@ const Dashboard: React.FC = () => {
     })
     .slice(0, 5);
 
+  const todayTotalWeight = Number(getTodayTotalWeight().toFixed(1));
+  const trendStats = getTodayTrendStats();
+  const typeStats = getTaskTypeStats();
+
   const levelMap: Record<ExceptionLevel, { text: string; color: string }> = {
     critical: { text: '严重', color: 'red' },
     warning: { text: '警告', color: 'orange' },
@@ -92,7 +96,7 @@ const Dashboard: React.FC = () => {
     xAxis: {
       type: 'category',
       boundaryGap: false,
-      data: ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', '24:00'],
+      data: trendStats.timeLabels,
       axisLine: { lineStyle: { color: '#475569' } },
       axisLabel: { color: '#94a3b8' },
     },
@@ -107,7 +111,7 @@ const Dashboard: React.FC = () => {
         name: '完成任务数',
         type: 'line',
         smooth: true,
-        data: [5, 8, 15, 22, 18, 25, 30],
+        data: trendStats.completedCounts,
         areaStyle: {
           color: {
             type: 'linear',
@@ -128,7 +132,7 @@ const Dashboard: React.FC = () => {
         name: '搬运量(吨)',
         type: 'line',
         smooth: true,
-        data: [2.5, 4.2, 8.5, 12.8, 10.2, 15.6, 18.3],
+        data: trendStats.weightTotals.map((v) => Number(v.toFixed(1))),
         areaStyle: {
           color: {
             type: 'linear',
@@ -151,6 +155,49 @@ const Dashboard: React.FC = () => {
       textStyle: { color: '#94a3b8' },
       top: 0,
     },
+  };
+
+  const taskTypeOption = {
+    tooltip: {
+      trigger: 'axis',
+      backgroundColor: 'rgba(15, 23, 42, 0.9)',
+      borderColor: '#334155',
+      textStyle: { color: '#e2e8f0' },
+      axisPointer: { type: 'shadow' },
+    },
+    grid: {
+      left: '3%',
+      right: '4%',
+      bottom: '3%',
+      top: '10%',
+      containLabel: true,
+    },
+    xAxis: {
+      type: 'category',
+      data: typeStats.typeLabels,
+      axisLine: { lineStyle: { color: '#475569' } },
+      axisLabel: { color: '#94a3b8' },
+    },
+    yAxis: {
+      type: 'value',
+      axisLine: { lineStyle: { color: '#475569' } },
+      axisLabel: { color: '#94a3b8' },
+      splitLine: { lineStyle: { color: '#1e293b' } },
+    },
+    series: [
+      {
+        name: '任务数',
+        type: 'bar',
+        barWidth: '40%',
+        data: typeStats.typeCounts.map((value, idx) => ({
+          value,
+          itemStyle: { color: ['#3b82f6', '#10b981', '#f59e0b'][idx] },
+        })),
+        itemStyle: {
+          borderRadius: [4, 4, 0, 0],
+        },
+      },
+    ],
   };
 
   const agvStatusOption = {
@@ -198,50 +245,6 @@ const Dashboard: React.FC = () => {
           { value: agvStats.fault, name: '故障', itemStyle: { color: '#ef4444' } },
           { value: agvStats.maintenance, name: '维护中', itemStyle: { color: '#6b7280' } },
         ],
-      },
-    ],
-  };
-
-  const taskTypeOption = {
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: 'rgba(15, 23, 42, 0.9)',
-      borderColor: '#334155',
-      textStyle: { color: '#e2e8f0' },
-      axisPointer: { type: 'shadow' },
-    },
-    grid: {
-      left: '3%',
-      right: '4%',
-      bottom: '3%',
-      top: '10%',
-      containLabel: true,
-    },
-    xAxis: {
-      type: 'category',
-      data: ['搬运任务', '补货任务', '盘点任务'],
-      axisLine: { lineStyle: { color: '#475569' } },
-      axisLabel: { color: '#94a3b8' },
-    },
-    yAxis: {
-      type: 'value',
-      axisLine: { lineStyle: { color: '#475569' } },
-      axisLabel: { color: '#94a3b8' },
-      splitLine: { lineStyle: { color: '#1e293b' } },
-    },
-    series: [
-      {
-        name: '任务数',
-        type: 'bar',
-        barWidth: '40%',
-        data: [
-          { value: 5, itemStyle: { color: '#3b82f6' } },
-          { value: 2, itemStyle: { color: '#10b981' } },
-          { value: 1, itemStyle: { color: '#f59e0b' } },
-        ],
-        itemStyle: {
-          borderRadius: [4, 4, 0, 0],
-        },
       },
     ],
   };
@@ -377,12 +380,12 @@ const Dashboard: React.FC = () => {
               <div>
                 <p className="text-sm text-gray-500">今日搬运量</p>
                 <p className="text-2xl font-bold text-gray-800 mt-1">
-                  18.3
+                  {todayTotalWeight}
                   <span className="text-sm font-normal text-gray-500 ml-1">吨</span>
                 </p>
                 <p className="text-xs text-green-500 mt-2 flex items-center">
                   <ArrowUpOutlined />
-                  <span className="ml-1">较昨日 +12.5%</span>
+                  <span className="ml-1">今日实时数据</span>
                 </p>
               </div>
               <div className="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">

@@ -4,11 +4,14 @@ import { useAgvStore } from '../../store/agvStore';
 import { mapPoints } from '../../mock/path';
 import type { Waypoint } from '../../types/path';
 import type { AGV } from '../../types/agv';
+import type { MapPoint } from '../../types/path';
 
 interface AgvMapProps {
   showPaths?: boolean;
   selectedPath?: Waypoint[];
   onAgvClick?: (agv: AGV) => void;
+  onPointClick?: (point: MapPoint) => void;
+  highlightPoint?: { name: string; type: 'start' | 'end' } | null;
   height?: number;
 }
 
@@ -16,6 +19,8 @@ const AgvMap: React.FC<AgvMapProps> = ({
   showPaths = true,
   selectedPath,
   onAgvClick,
+  onPointClick,
+  highlightPoint,
   height = 500,
 }) => {
   const { agvList } = useAgvStore();
@@ -162,38 +167,64 @@ const AgvMap: React.FC<AgvMapProps> = ({
           />
         )}
 
-        {mapPoints.map((point, index) => (
-          <g key={`point-${index}`}>
-            <circle
-              cx={point.x}
-              cy={point.y}
-              r={point.type === 'intersection' ? 8 : 16}
-              fill={getPointColor(point.type)}
-              opacity="0.9"
-            />
-            {point.type !== 'intersection' && (
+        {mapPoints.map((point, index) => {
+          const isStart = highlightPoint?.name === point.name && highlightPoint?.type === 'start';
+          const isEnd = highlightPoint?.name === point.name && highlightPoint?.type === 'end';
+          const highlightColor = isStart ? '#10B981' : isEnd ? '#EF4444' : null;
+          return (
+            <g
+              key={`point-${index}`}
+              className={onPointClick && point.type !== 'intersection' ? 'cursor-pointer' : ''}
+              onClick={() => {
+                if (onPointClick && point.type !== 'intersection') {
+                  onPointClick(point);
+                }
+              }}
+            >
+              {highlightColor && (
+                <circle
+                  cx={point.x}
+                  cy={point.y}
+                  r={32}
+                  fill="none"
+                  stroke={highlightColor}
+                  strokeWidth="3"
+                  className="animate-pulse"
+                />
+              )}
               <circle
                 cx={point.x}
                 cy={point.y}
-                r={20}
-                fill="none"
-                stroke={getPointColor(point.type)}
-                strokeWidth="2"
-                opacity="0.3"
+                r={point.type === 'intersection' ? 8 : 16}
+                fill={highlightColor || getPointColor(point.type)}
+                opacity="0.9"
               />
-            )}
-            <text
-              x={point.x}
-              y={point.y + 32}
-              textAnchor="middle"
-              fill="#94A3B8"
-              fontSize="11"
-              fontWeight="500"
-            >
-              {point.name}
-            </text>
-          </g>
-        ))}
+              {point.type !== 'intersection' && (
+                <circle
+                  cx={point.x}
+                  cy={point.y}
+                  r={20}
+                  fill="none"
+                  stroke={highlightColor || getPointColor(point.type)}
+                  strokeWidth="2"
+                  opacity="0.3"
+                />
+              )}
+              <text
+                x={point.x}
+                y={point.y + 32}
+                textAnchor="middle"
+                fill={highlightColor || '#94A3B8'}
+                fontSize="11"
+                fontWeight={highlightColor ? 'bold' : '500'}
+              >
+                {point.name}
+                {isStart && ' (起)'}
+                {isEnd && ' (终)'}
+              </text>
+            </g>
+          );
+        })}
 
         {agvList.map((agv) => (
           <g
