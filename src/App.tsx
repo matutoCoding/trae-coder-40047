@@ -1,3 +1,4 @@
+import React, { useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import MainLayout from "@/components/Layout/MainLayout";
 import Dashboard from "@/pages/Dashboard";
@@ -7,8 +8,30 @@ import PathPlanning from "@/pages/PathPlanning";
 import TrafficControl from "@/pages/TrafficControl";
 import Charging from "@/pages/Charging";
 import Exception from "@/pages/Exception";
-import { ConfigProvider } from 'antd';
+import { ConfigProvider, message } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
+import { useTaskStore } from '@/store/taskStore';
+
+const TaskScheduler: React.FC = () => {
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const { processScheduledTasks } = useTaskStore.getState();
+      const { success, failed } = processScheduledTasks(new Date());
+
+      success.forEach((item) => {
+        message.success(`定时任务 ${item.taskId} 已自动派发给 ${item.agvName}`);
+      });
+
+      failed.forEach((item) => {
+        message.warning(`定时任务 ${item.taskId} 到达生效时间，但${item.reason}，已转为待派发`);
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, []);
+
+  return null;
+};
 
 export default function App() {
   return (
@@ -21,6 +44,7 @@ export default function App() {
         },
       }}
     >
+      <TaskScheduler />
       <Router>
         <MainLayout>
           <Routes>

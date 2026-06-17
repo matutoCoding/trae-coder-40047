@@ -12,7 +12,10 @@ import {
   Badge,
   Tooltip,
   Avatar,
+  Modal,
+  Table,
 } from 'antd';
+import type { TaskStatus } from '../../types/task';
 import {
   CarOutlined,
   UnorderedListOutlined,
@@ -86,6 +89,33 @@ const Dashboard: React.FC = () => {
     critical: { text: '严重', color: 'red' },
     warning: { text: '警告', color: 'orange' },
     info: { text: '提示', color: 'blue' },
+  };
+
+  const taskStatusMap: Record<TaskStatus, { text: string; color: string }> = {
+    pending: { text: '待派发', color: 'default' },
+    scheduled: { text: '定时派发', color: 'purple' },
+    assigned: { text: '已派发', color: 'blue' },
+    executing: { text: '执行中', color: 'blue' },
+    completed: { text: '已完成', color: 'green' },
+    exception: { text: '异常', color: 'red' },
+    cancelled: { text: '已取消', color: 'default' },
+  };
+
+  const [agvDetailModalVisible, setAgvDetailModalVisible] = useState(false);
+  const [selectedAgvId, setSelectedAgvId] = useState<string | null>(null);
+  const [selectedAgvName, setSelectedAgvName] = useState<string>('');
+
+  const todayAgvCompletedTasks = selectedAgvId
+    ? taskList.filter((t) => {
+        const today = new Date().toLocaleDateString('zh-CN', { hour12: false }).replace(/\//g, '-');
+        return t.status === 'completed' && t.endTime?.startsWith(today) && t.agvId === selectedAgvId;
+      })
+    : [];
+
+  const handleAgvCardClick = (agvId: string, agvName: string) => {
+    setSelectedAgvId(agvId);
+    setSelectedAgvName(agvName);
+    setAgvDetailModalVisible(true);
   };
 
   const taskTrendOption = {
@@ -551,11 +581,8 @@ const Dashboard: React.FC = () => {
                     title={
                       <div className="flex items-center justify-between">
                         <span className="font-medium">{item.name}</span>
-                        <Tag color={item.status === 'completed' ? 'green' : item.status === 'executing' ? 'blue' : item.status === 'exception' ? 'red' : 'default'}>
-                          {item.status === 'pending' ? '待派发' :
-                           item.status === 'assigned' ? '已派发' :
-                           item.status === 'executing' ? '执行中' :
-                           item.status === 'completed' ? '已完成' : '异常'}
+                        <Tag color={taskStatusMap[item.status].color}>
+                          {taskStatusMap[item.status].text}
                         </Tag>
                       </div>
                     }
@@ -660,7 +687,8 @@ const Dashboard: React.FC = () => {
                 {agvRanking.map((item, idx) => (
                   <div
                     key={item.agvId}
-                    className="flex items-center gap-4 p-3 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors"
+                    className="flex items-center gap-4 p-3 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer"
+                    onClick={() => handleAgvCardClick(item.agvId, item.agvName)}
                   >
                     <div
                       className="w-10 h-10 rounded-full flex items-center justify-center text-xl font-bold text-white"
@@ -707,6 +735,75 @@ const Dashboard: React.FC = () => {
           </Card>
         </Col>
       </Row>
+
+      <Modal
+        title={`${selectedAgvName} 今日完成任务明细`}
+        open={agvDetailModalVisible}
+        onCancel={() => setAgvDetailModalVisible(false)}
+        footer={[
+          <Button key="close" onClick={() => setAgvDetailModalVisible(false)}>
+            关闭
+          </Button>,
+        ]}
+        width={800}
+      >
+        {todayAgvCompletedTasks.length === 0 ? (
+          <div className="text-center py-8 text-gray-400">
+            <CheckCircleOutlined className="text-3xl mb-2" />
+            <p>今日暂无完成任务</p>
+          </div>
+        ) : (
+          <Table
+            dataSource={todayAgvCompletedTasks}
+            rowKey="id"
+            size="small"
+            pagination={{ pageSize: 5 }}
+            columns={[
+              {
+                title: '任务ID',
+                dataIndex: 'id',
+                key: 'id',
+                width: 100,
+                render: (text: string) => (
+                  <span className="font-mono text-xs">{text}</span>
+                ),
+              },
+              {
+                title: '任务名称',
+                dataIndex: 'name',
+                key: 'name',
+                ellipsis: true,
+              },
+              {
+                title: '货物重量',
+                dataIndex: 'weight',
+                key: 'weight',
+                width: 100,
+                render: (weight: number) => `${weight}kg`,
+              },
+              {
+                title: '起终点',
+                key: 'route',
+                width: 180,
+                render: (_: any, record: any) => (
+                  <span className="text-sm">
+                    {record.startPoint} → {record.endPoint}
+                  </span>
+                ),
+              },
+              {
+                title: '完成时间',
+                dataIndex: 'endTime',
+                key: 'endTime',
+                width: 160,
+                render: (text: string) => (
+                  <span className="text-sm text-gray-500">{text}</span>
+                ),
+              },
+            ]}
+          />
+        )}
+      </Modal>
     </div>
   );
 };

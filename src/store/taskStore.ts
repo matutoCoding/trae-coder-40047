@@ -1,6 +1,32 @@
 import { create } from 'zustand';
 import type { Task, TaskStatus, TaskPriority } from '../types/task';
+import type { Path } from '../types/path';
 import { mockTaskList } from '../mock/task';
+import { useAgvStore } from './agvStore';
+
+interface WeeklyStat {
+  day: string;
+  count: number;
+  avgTime: number;
+}
+
+interface PathHistory {
+  passCount: number;
+  avgTime: number;
+  congestionEvents: number;
+  weeklyData: WeeklyStat[];
+  completedOnPath: Task[];
+  cachedAt: number;
+}
+
+interface ScheduledDispatchResult {
+  taskId: string;
+  taskName: string;
+  success: boolean;
+  agvId?: string;
+  agvName?: string;
+  reason?: string;
+}
 
 interface TaskState {
   taskList: Task[];
@@ -40,11 +66,20 @@ interface TaskState {
     completedCount: number;
     totalWeight: number;
   }[];
+  pathHistoryCache: Record<string, PathHistory>;
+  getPathHistory: (path: Path) => Omit<PathHistory, 'cachedAt'>;
+  clearPathHistoryCache: () => void;
+  invalidatePathHistoryCache: (pathId?: string) => void;
+  processScheduledTasks: (now: Date) => { success: ScheduledDispatchResult[]; failed: ScheduledDispatchResult[] };
+  updateTaskScheduledTime: (taskId: string, time: string) => void;
 }
+
+const CACHE_TTL_MS = 5 * 60 * 1000;
 
 export const useTaskStore = create<TaskState>((set, get) => ({
   taskList: mockTaskList,
   selectedTaskId: null,
+  pathHistoryCache: {},
 
   setTaskList: (taskList) => set({ taskList }),
 
@@ -212,4 +247,105 @@ export const useTaskStore = create<TaskState>((set, get) => ({
       .sort((a, b) => b.completedCount - a.completedCount || b.totalWeight - a.totalWeight)
       .map((r) => ({ ...r, agvName: '', totalWeight: Number(r.totalWeight.toFixed(1)) }));
   },
+
+  getPathHistory: (path: Path) => {
+    const { taskList, pathHistoryCache } = get();
+    const now = Date.now();
+    const cached = pathHistoryCache[path.id];
+    if (cached && now - cached.cachedAt < CACHE_TTL_MS) {
+      const { cachedAt: _cachedAt, ...rest } = cached;
+      return rest;
+    }
+
+    const completedOnPath = taskList.filter(
+      (t) => t.status === 'completed' && t.pathId === path.id
+    );
+    const passCount = 12 + completedOnPath.length + Math.floor(Math.random() * 20);
+    const avgTime = path.estimatedTime + Math.floor(Math.random() * 3) - 1;
+    const congestionEvents = Math.floor(Math.random() * 4);
+    const weeklyData: WeeklyStat[] = Array.from({ length: 7 }, (_, i) => ({
+      day: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][i],
+      count: Math.floor(Math.random() * 6) + 1,
+      avgTime: path.estimatedTime + Math.floor(Math.random() * 3),
+    }));
+
+    const history: PathHistory = {
+      passCount,
+      avgTime,
+      congestionEvents,
+      weeklyData,
+      completedOnPath,
+      cachedAt: now,
+    };
+
+    set({ pathHistoryCache: { ...pathHistoryCache, [path.id]: history } });
+
+    const { cachedAt: _cachedAt, ...rest } = history;
+    return rest;
+  },
+
+  clearPathHistoryCache: () => set({ pathHistoryCache: {} }),
+
+  invalidatePathHistoryCache: (pathId) => {
+    if (!pathId) {
+      set({ pathHistoryCache: {} });
+      return;
+    }
+    const { pathHistoryCache } = get();
+    const { [pathId]: _removed, ...rest } = pathHistoryCache;
+    set({ pathHistoryCache: rest });
+  },
+
+  processScheduledTasks: (now) => {
+    const { taskList } = get();
+    const agvState = useAgvStore.getState();
+    const { agvList, updateAgvStatus, updateAgv } = agvState;
+
+    const priorityWeight: Record<TaskPriority, number> = { high: 3, medium: 2, low: 1 };
+
+    const dueTasks = taskList
+      .filter((t) => t.status === 'scheduled' && t.scheduledTime && new Date(t.scheduledTime) <= now)
+      .sort((a, b) => priorityWeight[b.priority] - priorityWeight[a.priority]);
+
+    const successResults: ScheduledDispatchResult[] = [];
+    const failedResults: ScheduledDispatchResult[] = [];
+    const assignedAgvIds = new Set<string>();
+
+    for (const task of dueTasks) {
+      const availableAgv = agvList
+        .filter((agv) => agv.status === 'idle' && agv.maxLoad >= task.weight && !assignedAgvIds.has(agv.id))
+        .sort((a, b) => b.battery - a.battery)[0];
+
+      if (availableAgv) {
+        assignedAgvIds.add(availableAgv.id);
+        get().assignTask(task.id, availableAgv.id);
+        updateAgvStatus(availableAgv.id, 'running');
+        updateAgv(availableAgv.id, { currentTaskId: task.id });
+        successResults.push({
+          taskId: task.id,
+          taskName: task.name,
+          success: true,
+          agvId: availableAgv.id,
+          agvName: availableAgv.name,
+        });
+      } else {
+        get().updateTaskStatus(task.id, 'pending');
+        failedResults.push({
+          taskId: task.id,
+          taskName: task.name,
+          success: false,
+          reason: '无可用车辆',
+        });
+      }
+    }
+
+    return { success: successResults, failed: failedResults };
+  },
+
+  updateTaskScheduledTime: (taskId, time) =>
+    set((state) => ({
+      taskList: state.taskList.map((task) =>
+        task.id === taskId ? { ...task, scheduledTime: time } : task
+      ),
+    })),
 }));

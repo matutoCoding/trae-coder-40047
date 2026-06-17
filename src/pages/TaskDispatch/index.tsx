@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Table,
   Button,
@@ -23,6 +23,8 @@ import {
   Progress,
   List,
   DatePicker,
+  Dropdown,
+  MenuProps,
 } from 'antd';
 import {
   PlusOutlined,
@@ -38,6 +40,9 @@ import {
   SwapOutlined,
   ThunderboltOutlined,
   FieldTimeOutlined,
+  EyeOutlined,
+  DownOutlined,
+  BulbOutlined,
 } from '@ant-design/icons';
 import { useTaskStore } from '../../store/taskStore';
 import { useAgvStore } from '../../store/agvStore';
@@ -57,10 +62,13 @@ interface BatchDispatchResult {
   agvId?: string;
   agvName?: string;
   reason?: string;
+  allocationReason?: string;
 }
 
+type DispatchStrategy = 'battery' | 'load' | 'distance';
+
 const TaskDispatch: React.FC = () => {
-  const { taskList, addTask, updateTaskStatus, assignTask, completeTask, getTaskStats, getTaskById } = useTaskStore();
+  const { taskList, addTask, updateTaskStatus, assignTask, completeTask, getTaskStats, getTaskById, updateTaskScheduledTime } = useTaskStore();
   const { agvList, getAgvById, updateAgvStatus, updateAgv } = useAgvStore();
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -78,33 +86,19 @@ const TaskDispatch: React.FC = () => {
   const [formEndPoint, setFormEndPoint] = useState<string>('');
   const [now, setNow] = useState(new Date());
 
+  const [activeTab, setActiveTab] = useState<string>('list');
+  const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
+
+  const [batchPreviewMode, setBatchPreviewMode] = useState<boolean>(false);
+  const [batchPreviewResults, setBatchPreviewResults] = useState<BatchDispatchResult[]>([]);
+  const [dispatchStrategy, setDispatchStrategy] = useState<DispatchStrategy>('battery');
+  const [previewModalVisible, setPreviewModalVisible] = useState(false);
+
   useEffect(() => {
     const timer = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(timer);
   }, []);
-
-  useEffect(() => {
-    const scheduledTasks = taskList.filter(
-      (t) => t.status === 'scheduled' && t.scheduledTime
-    );
-    scheduledTasks.forEach((task) => {
-      const scheduled = new Date(task.scheduledTime!);
-      if (now >= scheduled) {
-        const matchedAgv = [...availableAgvs]
-          .filter((agv) => agv.maxLoad >= task.weight)
-          .sort((a, b) => b.battery - a.battery)[0];
-        if (matchedAgv) {
-          assignTask(task.id, matchedAgv.id);
-          updateAgvStatus(matchedAgv.id, 'running');
-          updateAgv(matchedAgv.id, { currentTaskId: task.id });
-          message.success(`定时任务 ${task.id} 已自动派发给 ${matchedAgv.name}`);
-        } else {
-          updateTaskStatus(task.id, 'pending');
-          message.warning(`定时任务 ${task.id} 到达生效时间，但无可用车辆，已转为待派发`);
-        }
-      }
-    });
-  }, [now]);
 
   const stats = getTaskStats();
 
@@ -265,17 +259,36 @@ const TaskDispatch: React.FC = () => {
     }
   };
 
-  const handleBatchDispatch = () => {
+  const calculateDistance = (agvX: number, agvY: number, startPointName: string): number => {
+    const point = mapPoints.find((p) => p.name === startPointName);
+    if (!point) return Infinity;
+    return Math.sqrt(Math.pow(agvX - point.x, 2) + Math.pow(agvY - point.y, 2));
+  };
+
+  const getAllocationReason = (strategy: DispatchStrategy, agv: { battery: number; maxLoad: number }, distance: number): string => {
+    switch (strategy) {
+      case 'battery':
+        return `电量最高(${agv.battery}%)`;
+      case 'load':
+        return `载重最大(${agv.maxLoad}kg)`;
+      case 'distance':
+        return `空驶距离最近(${Math.round(distance)}m)`;
+      default:
+        return '';
+    }
+  };
+
+  const performBatchDispatch = (isPreview: boolean): BatchDispatchResult[] => {
     if (selectedRowKeys.length === 0) {
       message.warning('请先勾选要派发的任务');
-      return;
+      return [];
     }
     const pendingSelected = taskList.filter(
       (t) => selectedRowKeys.includes(t.id) && (t.status === 'pending' || t.status === 'scheduled')
     );
     if (pendingSelected.length === 0) {
       message.warning('选中的任务中没有待派发状态的任务');
-      return;
+      return [];
     }
 
     const sortedTasks = [...pendingSelected].sort((a, b) => {
@@ -288,21 +301,42 @@ const TaskDispatch: React.FC = () => {
 
     sortedTasks.forEach((task) => {
       const remainingAgvs = [...availableAgvs].filter((agv) => !usedAgvIds.has(agv.id));
-      const matchedAgv = remainingAgvs
-        .filter((agv) => agv.maxLoad >= task.weight)
-        .sort((a, b) => b.battery - a.battery)[0];
+      const capableAgvs = remainingAgvs.filter((agv) => agv.maxLoad >= task.weight);
+
+      let matchedAgv = null;
+      if (capableAgvs.length > 0) {
+        switch (dispatchStrategy) {
+          case 'battery':
+            matchedAgv = capableAgvs.sort((a, b) => b.battery - a.battery)[0];
+            break;
+          case 'load':
+            matchedAgv = capableAgvs.sort((a, b) => b.maxLoad - a.maxLoad)[0];
+            break;
+          case 'distance':
+            matchedAgv = capableAgvs.sort((a, b) => {
+              const distA = calculateDistance(a.x, a.y, task.startPoint);
+              const distB = calculateDistance(b.x, b.y, task.startPoint);
+              return distA - distB;
+            })[0];
+            break;
+        }
+      }
 
       if (matchedAgv) {
-        assignTask(task.id, matchedAgv.id);
-        updateAgvStatus(matchedAgv.id, 'running');
-        updateAgv(matchedAgv.id, { currentTaskId: task.id });
+        if (!isPreview) {
+          assignTask(task.id, matchedAgv.id);
+          updateAgvStatus(matchedAgv.id, 'running');
+          updateAgv(matchedAgv.id, { currentTaskId: task.id });
+        }
         usedAgvIds.add(matchedAgv.id);
+        const distance = calculateDistance(matchedAgv.x, matchedAgv.y, task.startPoint);
         results.push({
           taskId: task.id,
           taskName: task.name,
           success: true,
           agvId: matchedAgv.id,
           agvName: matchedAgv.name,
+          allocationReason: getAllocationReason(dispatchStrategy, matchedAgv, distance),
         });
       } else {
         let reason = '无可用车辆';
@@ -333,10 +367,149 @@ const TaskDispatch: React.FC = () => {
       }
     });
 
+    return results;
+  };
+
+  const handleBatchDispatch = () => {
+    const results = performBatchDispatch(false);
+    if (results.length === 0) return;
     setBatchResults(results);
     setBatchModalVisible(true);
     setSelectedRowKeys([]);
   };
+
+  const handlePreviewDispatch = () => {
+    const results = performBatchDispatch(true);
+    if (results.length === 0) return;
+    setBatchPreviewResults(results);
+    setBatchPreviewMode(true);
+    setPreviewModalVisible(true);
+  };
+
+  const handleConfirmPreviewDispatch = () => {
+    const results = performBatchDispatch(false);
+    if (results.length === 0) return;
+    setBatchResults(results);
+    setPreviewModalVisible(false);
+    setBatchPreviewMode(false);
+    setBatchPreviewResults([]);
+    setBatchModalVisible(true);
+    setSelectedRowKeys([]);
+  };
+
+  const getHourFromTime = (timeStr?: string): number => {
+    if (!timeStr) return -1;
+    const d = new Date(timeStr);
+    if (isNaN(d.getTime())) return -1;
+    return d.getHours();
+  };
+
+  const HOUR_WIDTH = 60;
+  const TASK_BAR_HOURS = 2;
+
+  const handleDragStart = (taskId: string) => {
+    setDraggedTaskId(taskId);
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (!draggedTaskId || !timelineRef.current) return;
+
+    const rect = timelineRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const PENDING_AREA_WIDTH = 140;
+    const timelineX = x - PENDING_AREA_WIDTH;
+
+    if (timelineX < 0) {
+      setDraggedTaskId(null);
+      return;
+    }
+
+    let hour = Math.floor(timelineX / HOUR_WIDTH);
+    hour = Math.max(0, Math.min(23, hour));
+
+    const task = getTaskById(draggedTaskId);
+    if (task && task.scheduledTime) {
+      const currentDate = new Date(task.scheduledTime);
+      currentDate.setHours(hour, 0, 0, 0);
+      const newTimeStr = currentDate.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+      updateTaskScheduledTime(draggedTaskId, newTimeStr);
+      message.success(`任务 ${draggedTaskId} 定时时间已调整为 ${hour}:00`);
+    } else if (task) {
+      const today = new Date();
+      today.setHours(hour, 0, 0, 0);
+      const newTimeStr = today.toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+      updateTaskScheduledTime(draggedTaskId, newTimeStr);
+      updateTaskStatus(draggedTaskId, 'scheduled');
+      message.success(`任务 ${draggedTaskId} 已设置定时时间为 ${hour}:00`);
+    }
+
+    setDraggedTaskId(null);
+  };
+
+  const rowLabels = [
+    { key: 'pending', label: '待派发/定时', statuses: ['pending', 'scheduled'] as TaskStatus[] },
+    { key: 'executing', label: '执行中', statuses: ['assigned', 'executing'] as TaskStatus[] },
+    { key: 'completed', label: '已完成', statuses: ['completed'] as TaskStatus[] },
+  ];
+
+  const getTaskColor = (task: Task): string => {
+    switch (task.status) {
+      case 'pending':
+        return '#9CA3AF';
+      case 'scheduled':
+        return '#8B5CF6';
+      case 'assigned':
+      case 'executing':
+        return '#3B82F6';
+      case 'completed':
+        return '#22C55E';
+      default:
+        return '#6B7280';
+    }
+  };
+
+  const getTaskBarPosition = (task: Task): { left: number; visible: boolean } => {
+    if (task.status === 'pending') {
+      return { left: -9999, visible: false };
+    }
+    let hour = -1;
+    if (task.status === 'scheduled') hour = getHourFromTime(task.scheduledTime);
+    else if (task.status === 'assigned' || task.status === 'executing') hour = getHourFromTime(task.startTime);
+    else if (task.status === 'completed') hour = getHourFromTime(task.endTime);
+
+    if (hour < 0 || hour > 23) return { left: -9999, visible: false };
+    return { left: hour * HOUR_WIDTH, visible: true };
+  };
+
+  const taskTooltip = (task: Task) => (
+    <div className="text-xs space-y-1">
+      <p><b>{task.id} · {task.name}</b></p>
+      <p>类型：{typeMap[task.type]}</p>
+      <p>货物：{task.cargo} ({task.weight}kg)</p>
+      <p>起点：{task.startPoint}</p>
+      <p>终点：{task.endPoint}</p>
+      <p>状态：{statusMap[task.status]?.text}</p>
+      {task.agvId && <p>执行AGV：{task.agvId}</p>}
+      {task.scheduledTime && <p>定时时间：{task.scheduledTime}</p>}
+      {task.startTime && <p>开始时间：{task.startTime}</p>}
+      {task.endTime && <p>完成时间：{task.endTime}</p>}
+      {task.description && <p>备注：{task.description}</p>}
+    </div>
+  );
+
+  const batchDropdownItems: MenuProps['items'] = [
+    {
+      key: 'dispatch',
+      label: '立即派发',
+      icon: <SendOutlined />,
+      onClick: handleBatchDispatch,
+    },
+  ];
 
   const columns = [
     {
@@ -543,14 +716,25 @@ const TaskDispatch: React.FC = () => {
       <div className="flex items-center justify-between">
         <h2 className="text-xl font-bold text-gray-800">任务派发管理</h2>
         <Space>
-          <Button
+          <Select
+            value={dispatchStrategy}
+            onChange={(val: DispatchStrategy) => setDispatchStrategy(val)}
+            style={{ width: 150 }}
+            suffixIcon={<BulbOutlined />}
+          >
+            <Option value="battery">优先高电量</Option>
+            <Option value="load">优先大载重</Option>
+            <Option value="distance">优先短空驶</Option>
+          </Select>
+          <Dropdown.Button
             type="primary"
-            icon={<SendOutlined />}
-            onClick={handleBatchDispatch}
+            icon={<DownOutlined />}
+            menu={{ items: batchDropdownItems }}
+            onClick={handlePreviewDispatch}
             disabled={selectedRowKeys.length === 0}
           >
-            批量派发 {selectedRowKeys.length > 0 && `(${selectedRowKeys.length})`}
-          </Button>
+            <EyeOutlined /> 预览派发{selectedRowKeys.length > 0 && `(${selectedRowKeys.length})`}
+          </Dropdown.Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
             新建任务
           </Button>
@@ -611,61 +795,179 @@ const TaskDispatch: React.FC = () => {
       </Row>
 
       <Card>
-        <div className="flex items-center justify-between mb-4">
-          <Space>
-            <Input
-              placeholder="搜索任务ID、名称、货物"
-              prefix={<SearchOutlined />}
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              style={{ width: 280 }}
-              allowClear
-            />
-            <Select
-              value={statusFilter}
-              onChange={setStatusFilter}
-              style={{ width: 140 }}
-            >
-              <Option value="all">全部状态</Option>
-              <Option value="pending">待派发</Option>
-              <Option value="scheduled">定时派发</Option>
-              <Option value="assigned">已派发</Option>
-              <Option value="executing">执行中</Option>
-              <Option value="completed">已完成</Option>
-              <Option value="exception">异常</Option>
-            </Select>
-            <Select
-              value={priorityFilter}
-              onChange={setPriorityFilter}
-              style={{ width: 120 }}
-            >
-              <Option value="all">全部优先级</Option>
-              <Option value="high">高</Option>
-              <Option value="medium">中</Option>
-              <Option value="low">低</Option>
-            </Select>
-          </Space>
-          <span className="text-sm text-gray-500">
-            共 {filteredTaskList.length} 条任务
-            {pendingTasks.length > 0 && (
-              <Tag color="default" className="ml-2">{pendingTasks.length} 条待派发</Tag>
-            )}
-          </span>
-        </div>
+        <Tabs activeKey={activeTab} onChange={setActiveTab}>
+          <TabPane tab="列表视图" key="list">
+            <div className="flex items-center justify-between mb-4">
+              <Space>
+                <Input
+                  placeholder="搜索任务ID、名称、货物"
+                  prefix={<SearchOutlined />}
+                  value={searchText}
+                  onChange={(e) => setSearchText(e.target.value)}
+                  style={{ width: 280 }}
+                  allowClear
+                />
+                <Select
+                  value={statusFilter}
+                  onChange={setStatusFilter}
+                  style={{ width: 140 }}
+                >
+                  <Option value="all">全部状态</Option>
+                  <Option value="pending">待派发</Option>
+                  <Option value="scheduled">定时派发</Option>
+                  <Option value="assigned">已派发</Option>
+                  <Option value="executing">执行中</Option>
+                  <Option value="completed">已完成</Option>
+                  <Option value="exception">异常</Option>
+                </Select>
+                <Select
+                  value={priorityFilter}
+                  onChange={setPriorityFilter}
+                  style={{ width: 120 }}
+                >
+                  <Option value="all">全部优先级</Option>
+                  <Option value="high">高</Option>
+                  <Option value="medium">中</Option>
+                  <Option value="low">低</Option>
+                </Select>
+              </Space>
+              <span className="text-sm text-gray-500">
+                共 {filteredTaskList.length} 条任务
+                {pendingTasks.length > 0 && (
+                  <Tag color="default" className="ml-2">{pendingTasks.length} 条待派发</Tag>
+                )}
+              </span>
+            </div>
 
-        <Table
-          rowSelection={rowSelection}
-          columns={columns}
-          dataSource={filteredTaskList}
-          rowKey="id"
-          scroll={{ x: 1400 }}
-          pagination={{
-            pageSize: 10,
-            showSizeChanger: true,
-            showQuickJumper: true,
-            showTotal: (total) => `共 ${total} 条记录`,
-          }}
-        />
+            <Table
+              rowSelection={rowSelection}
+              columns={columns}
+              dataSource={filteredTaskList}
+              rowKey="id"
+              scroll={{ x: 1400 }}
+              pagination={{
+                pageSize: 10,
+                showSizeChanger: true,
+                showQuickJumper: true,
+                showTotal: (total) => `共 ${total} 条记录`,
+              }}
+            />
+          </TabPane>
+
+          <TabPane tab="排班视图" key="timeline">
+            <div
+              ref={timelineRef}
+              className="select-none"
+              onDragOver={handleDragOver}
+              onDrop={handleDrop}
+            >
+              <div className="flex" style={{ paddingLeft: 140 }}>
+                {Array.from({ length: 24 }, (_, i) => (
+                  <div
+                    key={i}
+                    className="text-center text-xs text-gray-500 border-l border-gray-200"
+                    style={{ width: HOUR_WIDTH }}
+                  >
+                    {i.toString().padStart(2, '0')}:00
+                  </div>
+                ))}
+              </div>
+
+              {rowLabels.map((row) => {
+                const rowTasks = filteredTaskList.filter((t) => row.statuses.includes(t.status));
+                const pendingTasksInRow = rowTasks.filter((t) => t.status === 'pending');
+
+                return (
+                  <div key={row.key} className="flex border-t border-gray-200 min-h-24">
+                    <div
+                      className="flex-shrink-0 flex items-center justify-start px-3 font-medium text-sm text-gray-700 bg-gray-50 border-r border-gray-200"
+                      style={{ width: 140 }}
+                    >
+                      {row.label}
+                    </div>
+                    <div className="relative flex-1">
+                      <div className="absolute inset-0 flex">
+                        {Array.from({ length: 24 }, (_, i) => (
+                          <div
+                            key={i}
+                            className="border-l border-gray-100"
+                            style={{ width: HOUR_WIDTH }}
+                          />
+                        ))}
+                      </div>
+
+                      {row.key === 'pending' && (
+                        <div className="flex flex-wrap gap-1 p-1">
+                          {pendingTasksInRow.map((task) => (
+                            <Tooltip key={task.id} title={taskTooltip(task)}>
+                              <div
+                                draggable
+                                onDragStart={() => handleDragStart(task.id)}
+                                className="text-white text-xs rounded px-2 py-1 cursor-move shadow hover:shadow-md transition-shadow"
+                                style={{ backgroundColor: getTaskColor(task) }}
+                              >
+                                <div className="font-medium">{task.id}</div>
+                                <div className="opacity-90">{task.name}</div>
+                                <div className="opacity-80 text-[10px]">{task.startPoint}→{task.endPoint}</div>
+                              </div>
+                            </Tooltip>
+                          ))}
+                        </div>
+                      )}
+
+                      {rowTasks
+                        .filter((t) => t.status !== 'pending')
+                        .map((task) => {
+                          const pos = getTaskBarPosition(task);
+                          if (!pos.visible) return null;
+                          const isDraggable = row.key === 'pending';
+                          return (
+                            <Tooltip key={task.id} title={taskTooltip(task)}>
+                              <div
+                                draggable={isDraggable || task.status === 'scheduled'}
+                                onDragStart={() => handleDragStart(task.id)}
+                                className="absolute text-white text-xs rounded px-2 py-1 shadow hover:shadow-md transition-shadow"
+                                style={{
+                                  left: pos.left,
+                                  top: 4,
+                                  width: HOUR_WIDTH * TASK_BAR_HOURS - 4,
+                                  backgroundColor: getTaskColor(task),
+                                  cursor: task.status === 'scheduled' ? 'move' : 'default',
+                                }}
+                              >
+                                <div className="font-medium truncate">{task.id} · {task.name}</div>
+                                <div className="opacity-90 truncate text-[10px]">{task.startPoint}→{task.endPoint}</div>
+                              </div>
+                            </Tooltip>
+                          );
+                        })}
+                    </div>
+                  </div>
+                );
+              })}
+
+              <div className="flex items-center gap-4 mt-4 pt-3 border-t border-gray-200 text-xs text-gray-600">
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-4 h-3 rounded" style={{ backgroundColor: '#9CA3AF' }}></span>
+                  待派发
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-4 h-3 rounded" style={{ backgroundColor: '#8B5CF6' }}></span>
+                  定时派发(可拖动)
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-4 h-3 rounded" style={{ backgroundColor: '#3B82F6' }}></span>
+                  执行中
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="inline-block w-4 h-3 rounded" style={{ backgroundColor: '#22C55E' }}></span>
+                  已完成
+                </span>
+                <span className="text-gray-400 ml-4">提示：将待派发/定时任务拖动到时间轴上可设置/调整定时时间</span>
+              </div>
+            </div>
+          </TabPane>
+        </Tabs>
       </Card>
 
       <Modal
@@ -1000,10 +1302,97 @@ const TaskDispatch: React.FC = () => {
                           ? `已分配：${item.agvName} (${item.agvId})`
                           : `分配失败：${item.reason}`}
                       </p>
+                      {item.success && item.allocationReason && (
+                        <p className="text-xs text-purple-600 mt-1">
+                          <BulbOutlined /> 分配理由：{item.allocationReason}
+                        </p>
+                      )}
                     </div>
                   </div>
                   <Tag color={item.success ? 'green' : 'red'}>
                     {item.success ? '成功' : '失败'}
+                  </Tag>
+                </div>
+              </List.Item>
+            )}
+          />
+        </div>
+      </Modal>
+
+      <Modal
+        title="派发预览"
+        open={previewModalVisible}
+        onCancel={() => {
+          setPreviewModalVisible(false);
+          setBatchPreviewMode(false);
+          setBatchPreviewResults([]);
+        }}
+        footer={[
+          <Button
+            key="cancel"
+            onClick={() => {
+              setPreviewModalVisible(false);
+              setBatchPreviewMode(false);
+              setBatchPreviewResults([]);
+            }}
+          >
+            取消
+          </Button>,
+          <Button
+            key="confirm"
+            type="primary"
+            onClick={handleConfirmPreviewDispatch}
+          >
+            确认派发
+          </Button>,
+        ]}
+        width={600}
+      >
+        <div className="mt-4 space-y-3">
+          <Alert
+            message={
+              <span>
+                派发预览：预计成功 <b>{batchPreviewResults.filter((r) => r.success).length}</b> 条，
+                预计失败 <b>{batchPreviewResults.filter((r) => !r.success).length}</b> 条
+                <Tag color="purple" className="ml-2">
+                  {dispatchStrategy === 'battery' && '策略：优先高电量'}
+                  {dispatchStrategy === 'load' && '策略：优先大载重'}
+                  {dispatchStrategy === 'distance' && '策略：优先短空驶'}
+                </Tag>
+              </span>
+            }
+            type={batchPreviewResults.every((r) => r.success) ? 'info' : 'warning'}
+            showIcon
+          />
+          <List
+            dataSource={batchPreviewResults}
+            renderItem={(item) => (
+              <List.Item className="border rounded-lg px-3 py-2">
+                <div className="w-full flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {item.success ? (
+                      <EyeOutlined className="text-blue-500 text-lg" />
+                    ) : (
+                      <ExclamationCircleOutlined className="text-red-500 text-lg" />
+                    )}
+                    <div>
+                      <p className="font-medium">
+                        {item.taskId} · {item.taskName}
+                      </p>
+                      <p className="text-xs text-gray-500">
+                        {item.success
+                          ? `预计分配：${item.agvName} (${item.agvId})`
+                          : `预计失败：${item.reason}`}
+                      </p>
+                      {item.success && item.allocationReason && (
+                        <p className="text-xs text-purple-600 mt-1">
+                          <BulbOutlined /> 分配理由：{item.allocationReason}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <Tag color={item.success ? 'blue' : 'red'}>
+                    {item.success ? '预计成功' : '预计失败'}
                   </Tag>
                 </div>
               </List.Item>

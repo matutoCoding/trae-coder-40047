@@ -56,7 +56,7 @@ const locationOptions = mapPoints
 
 const PathPlanning: React.FC = () => {
   const { agvList, getAgvById } = useAgvStore();
-  const { taskList, assignPath } = useTaskStore();
+  const { taskList, assignPath, getPathHistory } = useTaskStore();
   const { intersections } = useTrafficStore();
   const [startPoint, setStartPoint] = useState<string>('原料仓库A');
   const [endPoint, setEndPoint] = useState<string>('炼钢车间1号');
@@ -70,6 +70,12 @@ const PathPlanning: React.FC = () => {
   const [avoidCongestion, setAvoidCongestion] = useState(false);
   const [pathStatsModalVisible, setPathStatsModalVisible] = useState(false);
   const [selectedPathForStats, setSelectedPathForStats] = useState<Path | null>(null);
+  const [selectedPathStability, setSelectedPathStability] = useState<{
+    score: number;
+    grade: 'A' | 'B' | 'C' | 'D';
+    gradeColor: string;
+    suggestion: string;
+  } | null>(null);
 
   const congestedIntersections = intersections.filter((i) => i.status === 'controlled');
   const hasCongestion = congestedIntersections.length > 0;
@@ -186,6 +192,12 @@ const PathPlanning: React.FC = () => {
     setStartPoint(path.startPoint);
     setEndPoint(path.endPoint);
     setPathType(path.type);
+    const stats = getPathHistory(path);
+    const stability = calculateStabilityScore(stats);
+    setSelectedPathStability(stability);
+    message.success(
+      `已选择路径: ${path.name} · 稳定性评分: ${stability.score}分 ${stability.grade}级`
+    );
   };
 
   const handleUsePath = (path: Path) => {
@@ -216,19 +228,41 @@ const PathPlanning: React.FC = () => {
     (t) => t.status === 'pending' || t.status === 'assigned' || t.status === 'executing'
   );
 
-  const getPathHistory = (path: Path) => {
-    const completedOnPath = taskList.filter(
-      (t) => t.status === 'completed' && t.pathId === path.id
-    );
-    const passCount = 12 + completedOnPath.length + Math.floor(Math.random() * 20);
-    const avgTime = path.estimatedTime + Math.floor(Math.random() * 3) - 1;
-    const congestionEvents = Math.floor(Math.random() * 4);
-    const weeklyData = Array.from({ length: 7 }, (_, i) => ({
-      day: ['周一', '周二', '周三', '周四', '周五', '周六', '周日'][i],
-      count: Math.floor(Math.random() * 6) + 1,
-      avgTime: path.estimatedTime + Math.floor(Math.random() * 3),
-    }));
-    return { passCount, avgTime, congestionEvents, weeklyData, completedOnPath };
+  const calculateStabilityScore = (stats: {
+    passCount: number;
+    avgTime: number;
+    congestionEvents: number;
+  }) => {
+    const passScore = Math.min(100, (stats.passCount / 50) * 100);
+    const maxExpectedTime = 30;
+    const timeScore = Math.max(0, 100 - ((stats.avgTime - 5) / maxExpectedTime) * 100);
+    const congestionScore = Math.max(0, 100 - stats.congestionEvents * 25);
+    const totalScore = Math.round(passScore * 0.4 + timeScore * 0.35 + congestionScore * 0.25);
+    const clampedScore = Math.max(0, Math.min(100, totalScore));
+
+    let grade: 'A' | 'B' | 'C' | 'D';
+    let gradeColor: string;
+    let suggestion: string;
+
+    if (clampedScore >= 85) {
+      grade = 'A';
+      gradeColor = '#10B981';
+      suggestion = '该路径稳定性极佳，通行频繁且准点率高，强烈推荐作为首选路线。';
+    } else if (clampedScore >= 70) {
+      grade = 'B';
+      gradeColor = '#3B82F6';
+      suggestion = '该路径稳定性良好，整体通行顺畅，适合常规作业使用。';
+    } else if (clampedScore >= 50) {
+      grade = 'C';
+      gradeColor = '#F97316';
+      suggestion = '该路径稳定性一般，高峰期可能出现拥堵，建议错峰通行或启用备用路线。';
+    } else {
+      grade = 'D';
+      gradeColor = '#EF4444';
+      suggestion = '该路径稳定性较差，拥堵绕行频繁，建议优先选择其他路径或优化调度策略。';
+    }
+
+    return { score: clampedScore, grade, gradeColor, suggestion };
   };
 
   const handleOpenPathStats = (path: Path) => {
@@ -338,6 +372,56 @@ const PathPlanning: React.FC = () => {
                     : null
               }
             />
+
+            {selectedPathStability && selectedPath && (
+              <div
+                className="mt-4 rounded-lg p-4 flex items-center gap-4"
+                style={{
+                  backgroundColor: `${selectedPathStability.gradeColor}10`,
+                  border: `1px solid ${selectedPathStability.gradeColor}30`,
+                }}
+              >
+                <div
+                  className="w-14 h-14 rounded-full flex items-center justify-center flex-shrink-0"
+                  style={{ backgroundColor: selectedPathStability.gradeColor }}
+                >
+                  <div className="text-center">
+                    <p className="text-xl font-bold text-white leading-none">
+                      {selectedPathStability.score}
+                    </p>
+                    <p className="text-xs text-white opacity-90 mt-0.5">分</p>
+                  </div>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <span className="font-bold" style={{ color: selectedPathStability.gradeColor }}>
+                      {selectedPath.name} · 稳定性{selectedPathStability.grade}级
+                    </span>
+                    <Tag
+                      style={{
+                        backgroundColor: selectedPathStability.gradeColor,
+                        color: '#fff',
+                        border: 'none',
+                        fontWeight: 600,
+                        margin: 0,
+                      }}
+                    >
+                      {selectedPathStability.score}分
+                    </Tag>
+                  </div>
+                  <p className="text-xs text-gray-600 leading-relaxed">
+                    {selectedPathStability.suggestion}
+                  </p>
+                </div>
+                <Button
+                  size="small"
+                  icon={<LineChartOutlined />}
+                  onClick={() => handleOpenPathStats(selectedPath)}
+                >
+                  查看详情
+                </Button>
+              </div>
+            )}
           </Card>
         </Col>
 
@@ -484,6 +568,8 @@ const PathPlanning: React.FC = () => {
               renderItem={(item) => {
                 const agvsOnPath = getAgvsOnPath(item);
                 const isOccupied = agvsOnPath.length > 0;
+                const itemStats = getPathHistory(item);
+                const { score: itemScore, grade: itemGrade, gradeColor: itemGradeColor } = calculateStabilityScore(itemStats);
                 return (
                   <List.Item
                     className={`cursor-pointer hover:bg-gray-50 -mx-3 px-3 rounded ${
@@ -500,6 +586,16 @@ const PathPlanning: React.FC = () => {
                           </span>
                           <Tag color={item.type === 'shortest' ? 'blue' : item.type === 'fastest' ? 'green' : 'orange'}>
                             {item.type === 'shortest' ? '最短' : item.type === 'fastest' ? '最快' : '备用'}
+                          </Tag>
+                          <Tag
+                            style={{
+                              backgroundColor: itemGradeColor,
+                              color: '#fff',
+                              border: 'none',
+                              fontWeight: 600,
+                            }}
+                          >
+                            {itemScore}分 · {itemGrade}
                           </Tag>
                           {isOccupied && (
                             <Badge
@@ -655,8 +751,49 @@ const PathPlanning: React.FC = () => {
       >
         {selectedPathForStats && (() => {
           const stats = getPathHistory(selectedPathForStats);
+          const { score, grade, gradeColor, suggestion } = calculateStabilityScore(stats);
           return (
             <div className="space-y-4">
+              <div
+                className="rounded-lg p-5 flex items-center gap-6"
+                style={{ backgroundColor: `${gradeColor}10`, border: `1px solid ${gradeColor}30` }}
+              >
+                <div className="flex-shrink-0 text-center">
+                  <div
+                    className="w-20 h-20 rounded-full flex items-center justify-center"
+                    style={{ backgroundColor: gradeColor }}
+                  >
+                    <div>
+                      <p className="text-2xl font-bold text-white leading-none">{score}</p>
+                      <p className="text-xs text-white opacity-90 mt-0.5">分</p>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex-1">
+                  <div className="flex items-center gap-3 mb-2">
+                    <p className="text-lg font-bold" style={{ color: gradeColor }}>
+                      稳定性等级：{grade}级
+                    </p>
+                    <Tag
+                      style={{
+                        backgroundColor: gradeColor,
+                        color: '#fff',
+                        border: 'none',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {score}分
+                    </Tag>
+                  </div>
+                  <p className="text-sm text-gray-600 leading-relaxed">
+                    {suggestion}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-2">
+                    评分依据：近7日通行次数(40%) · 平均耗时(35%) · 拥堵绕行次数(25%)
+                  </p>
+                </div>
+              </div>
+
               <div className="grid grid-cols-3 gap-4">
                 <div className="text-center p-4 bg-blue-50 rounded-lg">
                   <p className="text-2xl font-bold text-blue-600">{stats.passCount}</p>
